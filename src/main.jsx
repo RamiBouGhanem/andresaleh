@@ -177,14 +177,14 @@ function App() {
     </header>
 
     <main>
-      {physioPage ? <><a className="physio-back" href="/">← Back to coaching</a><Physio /><section className="section rehab-programs"><p className="eyebrow">Your recovery plan</p><h2>Support beyond<br /><em>the session.</em></h2><p>Speak with Andre about a personalized rehabilitation or return-to-training program following your assessment.</p><a className="primary-btn" href={`https://wa.me/${coach.whatsapp}?text=Hi%20Andre%2C%20I%27d%20like%20to%20discuss%20a%20physiotherapy%20program.`} target="_blank" rel="noopener noreferrer">Discuss a program <ArrowRight size={17}/></a></section></> : <>
+      {physioPage ? <><a className="physio-back" href="/">← Back to coaching</a><Physio /><section className="section rehab-programs"><p className="eyebrow">Your recovery plan</p><h2>Support beyond<br /><em>the session</em></h2><p>Speak with Andre about a personalized rehabilitation or return-to-training program following your assessment.</p><a className="primary-btn" href={`https://wa.me/${coach.whatsapp}?text=Hi%20Andre%2C%20I%27d%20like%20to%20discuss%20a%20physiotherapy%20program.`} target="_blank" rel="noopener noreferrer">Discuss a program <ArrowRight size={17}/></a></section></> : <>
       <section id="home" className="hero">
         <picture className="hero-media"><img src="/images/stock-training.webp" alt="Athlete training with a kettlebell in a gym" fetchPriority="high" width="900" height="1350" /></picture>
         <div className="hero-overlay" />
         <div className="hero-content">
           <p className="eyebrow"><span /> Personal training · Physiotherapy</p>
-          <h1>Build strength.<br /><em>Move better.</em></h1>
-          <p className="hero-copy">A stronger body. Better movement.<br className="mobile-break" /> A plan that’s yours.</p>
+          <h1>Build strength<br /><em>Move better</em></h1>
+          <p className="hero-copy">A stronger body - Better movement<br className="mobile-break" /> A plan that’s yours</p>
           <div className="hero-actions">
             <a className="primary-btn" href={`https://wa.me/${coach.whatsapp}?text=Hi%20Andre%2C%20I%27d%20like%20to%20start%20coaching.`} target="_blank" rel="noopener noreferrer">Start with Andre <ArrowRight size={18} /></a>
             <button className="text-btn" onClick={() => navigate('programs')}>Explore coaching <ArrowRight size={17} /></button>
@@ -196,8 +196,8 @@ function App() {
 
       <section id="programs" className="section programs-section">
         <div className="section-heading">
-          <div><p className="eyebrow">Coaching</p><h2>Coaching <em>programs.</em></h2></div>
-          <p>Pick your goal. Andre builds the structure.</p>
+          <div><p className="eyebrow">Coaching</p><h2>Coaching <em>programs</em></h2></div>
+          <p>Pick your goal Andre builds the structure</p>
         </div>
         {catalogError && <p role="alert">{catalogError}</p>}
         <Carousel label="Coaching programs">
@@ -218,7 +218,7 @@ function App() {
       <section id="about" className="section about-section">
         <div className="portrait-wrap"><img src="/images/real-coaching.webp" alt="Coach guiding an athlete through a focused strength session" loading="lazy" width="1400" height="1120" /><div className="portrait-mark"><Award /><span><b>8 YEARS</b>OF COACHING</span></div></div>
         <div className="about-copy">
-          <p className="eyebrow">Your coach</p><h2>Andre<br /><em>Saleh.</em></h2>
+          <p className="eyebrow">Your coach</p><h2>Andre<br /><em>Saleh</em></h2>
           <p>Eight years of coaching. One focused approach: build strength, move with confidence, and make progress you can see.</p>
           <div className="credential-grid">
             <div><Dumbbell /><span><b>Strength</b>Progressive programming</span></div>
