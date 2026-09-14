@@ -1,0 +1,60 @@
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import {mkdtempSync,rmSync} from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+const dir=mkdtempSync(path.join(os.tmpdir(),'coach-test-'));
+const port=12000+Math.floor(Math.random()*10000),base=`http://127.0.0.1:${port}`;
+let processHandle,logs='';
+async function start(){logs='';processHandle=spawn(process.execPath,['--experimental-sqlite','server.js'],{env:{...process.env,PORT:String(port),DATA_DIR:dir,LEGACY_DATA_FILE:path.join(dir,'missing.json'),NODE_ENV:'test',ADMIN_EMAIL:'coach@demo.com',ADMIN_PASSWORD:'CoachDemo2026!'},stdio:'pipe'});processHandle.stdout.on('data',x=>logs+=x);processHandle.stderr.on('data',x=>logs+=x);for(let i=0;i<100;i++){await new Promise(r=>setTimeout(r,50));try{if((await fetch(base+'/api/health')).ok)return}catch{}}throw new Error(logs)}
+async function stop(){const p=processHandle;if(p&&!p.exitCode){await new Promise(r=>{p.once('exit',r);p.kill('SIGTERM')})}processHandle=null}
+function client(){let cookie='';return async(url,method='GET',body)=>{const r=await fetch(base+'/api'+url,{method,headers:{'Content-Type':'application/json',Cookie:cookie},...(body?{body:JSON.stringify(body)}:{})});if(r.headers.get('set-cookie'))cookie=r.headers.get('set-cookie').split(';')[0];const data=await r.json().catch(()=>null);return{status:r.status,data,headers:r.headers}}}
+const coach=client(),a=client(),b=client(),guest=client();
+try{
+ await start();
+ assert.equal((await guest('/admin/dashboard')).status,401);
+ assert.equal((await coach('/admin/login','POST',{email:'coach@demo.com',password:'wrong'})).status,401);
+ let login=await coach('/admin/login','POST',{email:'coach@demo.com',password:'CoachDemo2026!'});assert.equal(login.status,200);assert.match(login.headers.get('set-cookie'),/HttpOnly/);
+ for(const[c,name]of [[a,'Alice'],[b,'Bob']])assert.equal((await c('/member/register','POST',{name,email:name+'@example.com',password:'StrongPassword123!'})).status,201);
+ assert.equal((await guest('/member/register','POST',{name:'Duplicate',email:'Alice@example.com',password:'StrongPassword123!'})).status,409);
+ assert.equal((await a('/admin/dashboard')).status,403);
+ const profile=(await a('/member/dashboard')).data.user;
+ let program=(await coach('/admin/programs','POST',{title:'Private plan',price:150,status:'published',features:['Strength'],content:'PRIVATE EXERCISE PLAN'})).data;
+ assert.equal((await guest('/programs')).data.some(p=>p.content),false);
+ assert.equal((await a('/member/dashboard')).data.assignments.length,0);
+ assert.equal((await coach('/admin/assignments','POST',{memberId:profile.id,programId:program.id})).status,200);
+ assert.equal((await a('/member/dashboard')).data.assignments[0].program.content,'PRIVATE EXERCISE PLAN');
+ assert.equal((await b('/member/dashboard')).data.assignments.length,0);
+ assert.equal((await coach('/admin/programs/'+program.id,'DELETE')).status,400);
+ let ci=await a('/member/checkins','POST',{weight:84,planned:4,completed:3,notes:'My private check-in'});assert.equal(ci.status,201);
+ assert.equal((await b('/member/dashboard')).data.checkins.length,0);
+ await coach('/admin/checkins/'+ci.data.id,'PATCH',{reply:'Good consistency'});
+ assert.equal((await a('/member/dashboard')).data.checkins[0].reply,'Good consistency');
+ await a('/member/messages','POST',{body:'Hello coach'});await coach('/admin/messages','POST',{memberId:profile.id,body:'Welcome Alice'});
+ assert.equal((await a('/member/dashboard')).data.messages.length,2);assert.equal((await b('/member/dashboard')).data.messages.length,0);
+ assert.equal((await a('/orders','POST',{programId:program.id,amount:1})).status,201);
+ assert.equal((await a('/member/dashboard')).data.orders[0].amount,150);
+ const time=new Date(Date.now()+86400000).toISOString();
+ const ba=(await a('/bookings','POST',{serviceId:'assessment',requestedAt:time})).data;
+ const bb=(await b('/bookings','POST',{serviceId:'followup',requestedAt:time})).data;
+ assert.equal((await b('/member/bookings/'+ba.id,'PATCH',{})).status,404);
+ assert.equal((await coach('/admin/bookings/'+ba.id,'PATCH',{status:'confirmed'})).status,200);
+ assert.equal((await coach('/admin/bookings/'+bb.id,'PATCH',{status:'confirmed'})).status,409);
+ const photo='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=';
+ const t={name:'Consenting client',title:'Test result',before:photo,after:photo,consent:false,published:true};
+ assert.equal((await coach('/admin/transformations','POST',t)).status,400);
+ assert.equal((await coach('/admin/transformations','POST',{...t,consent:true})).status,200);
+ assert.equal((await guest('/transformations')).data.length,1);
+ await stop();await start();
+ assert.equal((await a('/member/dashboard')).data.checkins.length,1);
+ assert.equal((await coach('/admin/dashboard')).data.clients.length,2);
+ const reset=(await coach('/admin/members/'+profile.id+'/reset','POST',{})).data.path.split('reset=')[1];
+ assert.equal((await guest('/member/reset','POST',{token:reset,password:'ChangedPassword123!'})).status,200);
+ assert.equal((await guest('/member/reset','POST',{token:reset,password:'ChangedAgain123!'})).status,400);
+ assert.equal((await a('/member/dashboard')).status,401);
+ assert.equal((await a('/member/login','POST',{email:'alice@example.com',password:'ChangedPassword123!'})).status,200);
+ await coach('/admin/members/'+profile.id,'PATCH',{status:'inactive'});assert.equal((await a('/member/dashboard')).status,401);
+ assert.equal((await a('/member/login','POST',{email:'alice@example.com',password:'ChangedPassword123!'})).status,403);
+ assert.equal((await fetch(base+'/api/logout',{method:'POST',headers:{Origin:'https://evil.example'}})).status,403);
+ console.log('PASS: registration, login, duplicate email, role enforcement, private program access, check-ins, messages, server-side prices, booking conflicts, image publishing consent, restart persistence, one-use password reset, deactivation and origin checks.');
+}finally{await stop();rmSync(dir,{recursive:true,force:true})}
