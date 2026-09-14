@@ -3,72 +3,940 @@ import crypto from 'node:crypto';
 import {promisify} from 'node:util';
 import path from 'node:path';
 import {existsSync} from 'node:fs';
-if(existsSync('.env'))process.loadEnvFile('.env');
-const {db,readStore,writeStore}=await import('./backend/database.js');
-const app=express(),production=process.env.NODE_ENV==='production',scrypt=promisify(crypto.scrypt);
-const adminEmail=process.env.ADMIN_EMAIL||'coach@demo.com',adminPassword=process.env.ADMIN_PASSWORD||'CoachDemo2026!';
-if(production&&(!process.env.ADMIN_EMAIL||!process.env.ADMIN_PASSWORD||adminPassword==='CoachDemo2026!'||adminPassword.length<12))throw new Error('Set ADMIN_EMAIL and a unique ADMIN_PASSWORD of at least 12 characters.');
-app.set('trust proxy',1);app.disable('x-powered-by');
-app.use((q,r,next)=>{r.set('X-Content-Type-Options','nosniff');r.set('X-Frame-Options','DENY');r.set('Referrer-Policy','same-origin');if(q.path.startsWith('/api'))r.set('Cache-Control','no-store');if(!['GET','HEAD','OPTIONS'].includes(q.method)&&q.headers.origin){const allowed=process.env.APP_ORIGIN||`${q.protocol}://${q.get('host')}`;if(q.headers.origin!==allowed)return r.status(403).json({message:'Request origin is not allowed.'})}next()});
-app.use(express.json({limit:'7mb'}));
-const id=()=>crypto.randomUUID(),now=()=>new Date().toISOString(),hash=x=>crypto.createHash('sha256').update(x).digest('hex');
-const fail=(msg,status=400)=>{throw Object.assign(new Error(msg),{status})};
-const text=(v,max=2000)=>typeof v==='string'?v.trim().slice(0,max):'';
-const email=v=>{const e=text(v,254).toLowerCase();if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))fail('Enter a valid email address.');return e};
-const number=(v,min,max)=>{const n=Number(v);if(!Number.isFinite(n)||n<min||n>max)fail(`Enter a value between ${min} and ${max}.`);return n};
-const choice=(v,values)=>{if(!values.includes(v))fail('Invalid status.');return v};
-const publicUser=u=>({id:u.id,name:u.name,email:u.email,status:u.status,createdAt:u.createdAt,lastLogin:u.lastLogin});
-async function passwordHash(p){if(typeof p!=='string'||p.length<12||p.length>128)fail('Use a password of 12–128 characters.');const salt=crypto.randomBytes(16).toString('hex');return salt+':'+(await scrypt(p,salt,64)).toString('hex')}
-async function verify(p,stored){if(typeof p!=='string'||p.length>128)return false;const[salt,digest]=stored.split(':');const actual=await scrypt(p,salt,64);return crypto.timingSafeEqual(actual,Buffer.from(digest,'hex'))}
-const adminHash=await passwordHash(adminPassword);
-const dummyHash=await passwordHash(crypto.randomBytes(20).toString('hex'));
-const attempts=new Map();
-function throttle(q,r,next){const key=q.ip;let a=attempts.get(key);if(!a||a.until<Date.now()){a={count:0,until:Date.now()+900000};attempts.set(key,a)}if(++a.count>30)return r.status(429).json({message:'Too many attempts. Try again in 15 minutes.'});next()}
-setInterval(()=>{for(const[k,v]of attempts)if(v.until<Date.now())attempts.delete(k);db.prepare('DELETE FROM sessions WHERE expires < ?').run(Date.now());db.prepare('DELETE FROM resets WHERE expires < ?').run(Date.now())},60000).unref();
-function cookie(q){return (q.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith('coach_session='))?.slice(14)||''}
-function session(q){const token=cookie(q);return token?db.prepare('SELECT * FROM sessions WHERE hash=? AND expires>?').get(hash(token),Date.now()):null}
-function issue(q,r,userId,role){const old=cookie(q);if(old)db.prepare('DELETE FROM sessions WHERE hash=?').run(hash(old));const token=crypto.randomBytes(32).toString('hex');db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').run(hash(token),userId,role,Date.now()+28800000);r.cookie('coach_session',token,{httpOnly:true,secure:production,sameSite:'lax',path:'/',maxAge:28800000})}
-function auth(role){return(q,r,next)=>{const s=session(q);if(!s)return r.status(401).json({message:'Please sign in again.'});if(role&&s.role!==role)return r.status(403).json({message:'Access denied.'});if(s.role==='member'){q.user=db.prepare('SELECT * FROM users WHERE id=?').get(s.userId);if(!q.user||q.user.status!=='active')return r.status(403).json({message:'Your account is inactive. Contact the coach.'})}q.session=s;next()}}
-const admin=auth('admin'),member=auth('member');
-app.get('/api/health',(_q,r)=>r.json({ok:true,database:'sqlite'}));
-app.get('/api/session',(q,r)=>{const s=session(q);r.json({role:s?.role||null})});
-app.post('/api/logout',(q,r)=>{db.prepare('DELETE FROM sessions WHERE hash=?').run(hash(cookie(q)));r.clearCookie('coach_session',{path:'/'});r.status(204).end()});
-app.post('/api/admin/login',throttle,async(q,r)=>{if(!(await verify(q.body.password,adminHash))||text(q.body.email).toLowerCase()!==adminEmail.toLowerCase())fail('Incorrect email or password.',401);issue(q,r,'admin','admin');r.json({ok:true})});
-app.post('/api/member/register',throttle,async(q,r)=>{const e=email(q.body.email),name=text(q.body.name,100);if(!name)fail('Enter your name.');const pwd=await passwordHash(q.body.password),uid=id();try{db.prepare('INSERT INTO users(id,email,name,password,createdAt) VALUES(?,?,?,?,?)').run(uid,e,name,pwd,now())}catch(err){if(String(err.message).includes('UNIQUE'))fail('An account already uses that email.',409);throw err}issue(q,r,uid,'member');r.status(201).json({ok:true})});
-app.post('/api/member/login',throttle,async(q,r)=>{const u=db.prepare('SELECT * FROM users WHERE email=?').get(email(q.body.email));const ok=await verify(q.body.password,u?.password||dummyHash);if(!ok||!u)fail('Incorrect email or password.',401);if(u.status!=='active')fail('Your account is inactive. Contact the coach.',403);db.prepare('UPDATE users SET lastLogin=? WHERE id=?').run(now(),u.id);issue(q,r,u.id,'member');r.json({ok:true})});
-app.post('/api/member/password',member,async(q,r)=>{if(!await verify(q.body.current,q.user.password))fail('Current password is incorrect.');const pwd=await passwordHash(q.body.password);db.prepare('UPDATE users SET password=? WHERE id=?').run(pwd,q.user.id);db.prepare('DELETE FROM sessions WHERE userId=?').run(q.user.id);issue(q,r,q.user.id,'member');r.json({ok:true})});
-app.post('/api/member/reset',throttle,async(q,r)=>{const digest=hash(text(q.body.token,100)),reset=db.prepare('SELECT * FROM resets WHERE hash=? AND expires>?').get(digest,Date.now());if(!reset)fail('This reset link is invalid or expired.');const pwd=await passwordHash(q.body.password);db.exec('BEGIN IMMEDIATE');try{const live=db.prepare('SELECT * FROM resets WHERE hash=? AND expires>?').get(digest,Date.now());if(!live)fail('Reset link already used.');db.prepare('UPDATE users SET password=? WHERE id=?').run(pwd,live.userId);db.prepare('DELETE FROM resets WHERE userId=?').run(live.userId);db.prepare('DELETE FROM sessions WHERE userId=?').run(live.userId);db.exec('COMMIT')}catch(e){db.exec('ROLLBACK');throw e}r.json({ok:true})});
-function catalogProgram(p){const{content,...publicFields}=p;return publicFields}
-app.get('/api/programs',(_q,r)=>r.json(readStore().programs.filter(p=>p.status==='published').map(catalogProgram)));
-app.post('/api/track',(_q,r)=>{const s=readStore();s.views++;writeStore(s);r.status(204).end()});
-app.post('/api/leads',throttle,(q,r)=>{const s=readStore(),name=text(q.body.name,100),e=email(q.body.email);if(!name)fail('Name is required.');s.leads.unshift({id:id(),name,email:e,goal:text(q.body.goal),source:'Website',status:'new',createdAt:now()});writeStore(s);r.status(201).json({ok:true})});
-app.post('/api/orders',member,(q,r)=>{const s=readStore(),p=s.programs.find(p=>(p.id===q.body.programId||p.title===q.body.program)&&p.status==='published');if(!p)fail('Program not available.',404);const existing=s.orders.find(o=>o.memberId===q.user.id&&o.programId===p.id&&o.status==='pending');if(existing)return r.json({reference:existing.id,message:'Your existing request is awaiting the coach’s review.'});const order={id:id(),memberId:q.user.id,name:q.user.name,email:q.user.email,phone:text(q.body.phone,60),programId:p.id,program:p.title,amount:p.price,status:'pending',createdAt:now()};s.orders.unshift(order);writeStore(s);r.status(201).json({reference:order.id,message:'Your request is saved. Your coach will arrange payment and program access.'})});
-app.get('/api/member/dashboard',member,(q,r)=>{const s=readStore(),uid=q.user.id;r.json({user:publicUser(q.user),assignments:s.assignments.filter(a=>a.memberId===uid).map(a=>({...a,program:s.programs.find(p=>p.id===a.programId)||{title:'Archived program'}})),checkins:s.checkins.filter(c=>c.memberId===uid),messages:s.messages.filter(m=>m.memberId===uid),bookings:s.bookings.filter(b=>b.memberId===uid),orders:s.orders.filter(o=>o.memberId===uid)})});
-app.post('/api/member/checkins',member,(q,r)=>{const s=readStore();const c={id:id(),memberId:q.user.id,createdAt:now(),weight:q.body.weight===''?null:number(q.body.weight,20,400),completed:number(q.body.completed,0,30),planned:number(q.body.planned,1,30),notes:text(q.body.notes),reply:''};if(c.completed>c.planned)fail('Completed sessions cannot exceed planned sessions.');s.checkins.unshift(c);writeStore(s);r.status(201).json(c)});
-app.post('/api/member/messages',member,(q,r)=>{const body=text(q.body.body);if(!body)fail('Enter a message.');const s=readStore();s.messages.push({id:id(),memberId:q.user.id,from:'member',body,createdAt:now()});writeStore(s);r.status(201).json({ok:true})});
-app.get('/api/services',(_q,r)=>r.json(readStore().services.filter(s=>s.active)));
-app.post('/api/bookings',member,(q,r)=>{const s=readStore(),service=s.services.find(x=>x.id===q.body.serviceId&&x.active),time=Date.parse(q.body.requestedAt);if(!service||!Number.isFinite(time)||time<Date.now()||time>Date.now()+180*86400000)fail('Choose a service and a future date within six months.');const b={id:id(),memberId:q.user.id,name:q.user.name,serviceId:service.id,title:service.title,duration:service.duration,price:service.price,requestedAt:new Date(time).toISOString(),status:'requested',notes:text(q.body.notes,500),createdAt:now()};s.bookings.unshift(b);writeStore(s);r.status(201).json(b)});
-app.patch('/api/member/bookings/:id',member,(q,r)=>{const s=readStore(),b=s.bookings.find(x=>x.id===q.params.id&&x.memberId===q.user.id);if(!b)fail('Not found.',404);if(!['requested','confirmed'].includes(b.status))fail('This appointment cannot be cancelled.');b.status='cancelled';writeStore(s);r.json(b)});
-app.get('/api/transformations',(_q,r)=>r.json(readStore().transformations.filter(t=>t.published&&t.consent).map(({consent,...t})=>t)));
-app.get('/api/admin/dashboard',admin,(_q,r)=>{const s=readStore(),users=db.prepare('SELECT * FROM users ORDER BY createdAt DESC').all();const clients=users.map(u=>{const c=s.checkins.find(x=>x.memberId===u.id);return {...publicUser(u),program:s.assignments.filter(a=>a.memberId===u.id).map(a=>s.programs.find(p=>p.id===a.programId)?.title).filter(Boolean).join(', ')||'Not assigned',progress:0,compliance:c?Math.round(c.completed/c.planned*100):0,nextCheckIn:c?c.createdAt.slice(0,10):'No check-in yet'}});const programs=s.programs.map(p=>({...p,sales:s.orders.filter(o=>o.programId===p.id&&o.status==='paid').length}));r.json({...s,programs,clients,stats:{revenue:s.orders.filter(o=>o.status==='paid').reduce((n,o)=>n+o.amount,0),orders:s.orders.length,clients:clients.filter(c=>c.status==='active').length,leads:s.leads.filter(l=>l.status==='new').length,views:s.views}})});
-function programInput(x){const title=text(x.title,120);if(!title)fail('Title is required.');return{title,tag:text(x.tag,40),subtitle:text(x.subtitle,150),duration:text(x.duration,50),level:text(x.level,50),price:number(x.price,0,100000),status:choice(x.status,['draft','published']),description:text(x.description,5000),features:Array.isArray(x.features)?x.features.slice(0,30).map(f=>text(f,250)):[],content:text(x.content,30000)}}
-app.post('/api/admin/programs',admin,(q,r)=>{const s=readStore(),p={id:id(),...programInput(q.body)};s.programs.unshift(p);writeStore(s);r.status(201).json(p)});
-app.put('/api/admin/programs/:id',admin,(q,r)=>{const s=readStore(),p=s.programs.find(p=>p.id===q.params.id);if(!p)fail('Not found.',404);Object.assign(p,programInput(q.body));writeStore(s);r.json(p)});
-app.delete('/api/admin/programs/:id',admin,(q,r)=>{const s=readStore();if(s.assignments.some(a=>a.programId===q.params.id))fail('This program is assigned to a member. Set it to draft to remove it from sale.');s.programs=s.programs.filter(p=>p.id!==q.params.id);writeStore(s);r.status(204).end()});
-for(const type of ['orders','leads'])app.patch(`/api/admin/${type}/:id`,admin,(q,r)=>{const s=readStore(),x=s[type].find(i=>i.id===q.params.id);if(!x)fail('Not found.',404);x.status=choice(q.body.status,type==='orders'?['pending','paid','cancelled','refunded']:['new','contacted','qualified','converted','closed']);writeStore(s);r.json(x)});
-app.patch('/api/admin/members/:id',admin,(q,r)=>{const status=choice(q.body.status,['active','inactive']);db.prepare('UPDATE users SET status=? WHERE id=?').run(status,q.params.id);if(status==='inactive')db.prepare('DELETE FROM sessions WHERE userId=?').run(q.params.id);r.json({ok:true})});
-app.post('/api/admin/members/:id/reset',admin,(q,r)=>{if(!db.prepare('SELECT id FROM users WHERE id=?').get(q.params.id))fail('Not found.',404);const token=crypto.randomBytes(32).toString('hex');db.prepare('DELETE FROM resets WHERE userId=?').run(q.params.id);db.prepare('INSERT INTO resets VALUES(?,?,?)').run(hash(token),q.params.id,Date.now()+1800000);r.json({path:`/member?reset=${token}`})});
-app.post('/api/admin/assignments',admin,(q,r)=>{const s=readStore();if(!db.prepare('SELECT id FROM users WHERE id=?').get(q.body.memberId)||!s.programs.some(p=>p.id===q.body.programId))fail('Choose a member and a program.');if(!s.assignments.some(a=>a.memberId===q.body.memberId&&a.programId===q.body.programId))s.assignments.push({id:id(),memberId:q.body.memberId,programId:q.body.programId,createdAt:now()});writeStore(s);r.json({ok:true})});
-app.delete('/api/admin/assignments/:id',admin,(q,r)=>{const s=readStore();s.assignments=s.assignments.filter(a=>a.id!==q.params.id);writeStore(s);r.status(204).end()});
-app.post('/api/admin/messages',admin,(q,r)=>{const s=readStore(),body=text(q.body.body);if(!body||!db.prepare('SELECT id FROM users WHERE id=?').get(q.body.memberId))fail('Select a member and enter a message.');s.messages.push({id:id(),memberId:q.body.memberId,from:'coach',body,createdAt:now()});writeStore(s);r.json({ok:true})});
-app.patch('/api/admin/checkins/:id',admin,(q,r)=>{const s=readStore(),c=s.checkins.find(c=>c.id===q.params.id);if(!c)fail('Not found.',404);c.reply=text(q.body.reply);writeStore(s);r.json(c)});
-app.patch('/api/admin/bookings/:id',admin,(q,r)=>{const s=readStore(),b=s.bookings.find(b=>b.id===q.params.id);if(!b)fail('Not found.',404);const status=choice(q.body.status,['requested','confirmed','completed','cancelled']);if(status==='confirmed'){const start=Date.parse(b.requestedAt),end=start+b.duration*60000;if(start<Date.now())fail('Cannot confirm an appointment in the past.');if(s.bookings.some(other=>other.id!==b.id&&other.status==='confirmed'&&Date.parse(other.requestedAt)<end&&Date.parse(other.requestedAt)+other.duration*60000>start))fail('Another confirmed appointment overlaps this time.',409)}b.status=status;writeStore(s);r.json(b)});
-app.post('/api/admin/services',admin,(q,r)=>{const s=readStore(),x=q.body,title=text(x.title,120);if(!title)fail('Title is required.');const v={id:x.id||id(),title,duration:number(x.duration,15,180),price:number(x.price,0,10000),description:text(x.description),active:x.active===true};const i=s.services.findIndex(a=>a.id===v.id);if(i<0)s.services.push(v);else s.services[i]=v;writeStore(s);r.json(v)});
-function image(value){if(!value)return '';if(typeof value!=='string'||value.length>2800000||!/^data:image\/(png|jpeg|webp);base64,/.test(value))fail('Use a JPEG, PNG or WebP image under 2 MB.');const b=Buffer.from(value.split(',')[1],'base64');if(!(b[0]===255&&b[1]===216)&&!b.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))&&!(b.toString('ascii',0,4)==='RIFF'&&b.toString('ascii',8,12)==='WEBP'))fail('Invalid image.');return value}
-app.post('/api/admin/transformations',admin,(q,r)=>{const s=readStore(),x=q.body,t={id:x.id||id(),name:text(x.name,100),title:text(x.title,150),story:text(x.story,2500),duration:text(x.duration,100),before:image(x.before),after:image(x.after),consent:x.consent===true,published:x.published===true};if(!t.name||!t.title)fail('Name and title are required.');if(t.published&&(!t.consent||!t.before||!t.after))fail('Before/after photos and recorded permission are required to publish.');const i=s.transformations.findIndex(a=>a.id===t.id);if(i<0)s.transformations.push(t);else s.transformations[i]=t;writeStore(s);r.json({ok:true})});
-app.delete('/api/admin/transformations/:id',admin,(q,r)=>{const s=readStore();s.transformations=s.transformations.filter(t=>t.id!==q.params.id);writeStore(s);r.status(204).end()});
-app.use('/api',(_q,r)=>r.status(404).json({message:'API route not found.'}));
-app.use(express.static(path.resolve('dist')));app.get('/{*path}',(_q,r)=>r.sendFile(path.resolve('dist/index.html')));
-app.use((e,_q,r,_next)=>{if(!e.status)console.error(e);r.status(e.status||500).json({message:e.status?e.message:'Server error. Please try again.'})});
-const server=app.listen(process.env.PORT||10000,()=>console.log(`Coach platform ready on port ${process.env.PORT||10000}`));
-for(const signal of ['SIGTERM','SIGINT'])process.on(signal,()=>server.close(()=>{db.close();process.exit(0)}));
+
+if (existsSync('.env')) process.loadEnvFile('.env');
+
+const {db, readStore, writeStore} = await import('./backend/database.js');
+
+const app = express();
+const production = process.env.NODE_ENV === 'production';
+const scrypt = promisify(crypto.scrypt);
+const adminEmail = process.env.ADMIN_EMAIL || 'coach@demo.com';
+const adminPassword = process.env.ADMIN_PASSWORD || 'CoachDemo2026!';
+
+if (production && (
+  !process.env.ADMIN_EMAIL ||
+  !process.env.ADMIN_PASSWORD ||
+  adminPassword === 'CoachDemo2026!' ||
+  adminPassword.length < 12
+)) {
+  throw new Error('Set ADMIN_EMAIL and a unique ADMIN_PASSWORD of at least 12 characters');
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS message_reads (
+    message_id TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    read_at TEXT NOT NULL,
+    PRIMARY KEY (message_id, recipient_id)
+  )
+`);
+
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+
+app.use((q, r, next) => {
+  r.set('X-Content-Type-Options', 'nosniff');
+  r.set('X-Frame-Options', 'DENY');
+  r.set('Referrer-Policy', 'same-origin');
+
+  if (q.path.startsWith('/api')) r.set('Cache-Control', 'no-store');
+
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(q.method) && q.headers.origin) {
+    const allowed = process.env.APP_ORIGIN || `${q.protocol}://${q.get('host')}`;
+    if (q.headers.origin !== allowed) {
+      return r.status(403).json({message: 'Request origin is not allowed'});
+    }
+  }
+
+  next();
+});
+
+app.use(express.json({limit: '7mb'}));
+
+const id = () => crypto.randomUUID();
+const now = () => new Date().toISOString();
+const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+
+const fail = (message, status = 400) => {
+  throw Object.assign(new Error(message), {status});
+};
+
+const text = (value, max = 2000) =>
+  typeof value === 'string' ? value.trim().slice(0, max) : '';
+
+function email(value) {
+  const result = text(value, 254).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(result)) fail('Enter a valid email address');
+  return result;
+}
+
+function number(value, min, max) {
+  const result = Number(value);
+  if (!Number.isFinite(result) || result < min || result > max) {
+    fail(`Enter a value between ${min} and ${max}`);
+  }
+  return result;
+}
+
+function choice(value, allowed) {
+  if (!allowed.includes(value)) fail('Invalid status');
+  return value;
+}
+
+const publicUser = user => ({
+  id: user.id,
+  name: user.name,
+  email: user.email,
+  status: user.status,
+  createdAt: user.createdAt,
+  lastLogin: user.lastLogin
+});
+
+async function passwordHash(password) {
+  if (typeof password !== 'string' || password.length < 12 || password.length > 128) {
+    fail('Use a password of 12–128 characters');
+  }
+
+  const salt = crypto.randomBytes(16).toString('hex');
+  return salt + ':' + (await scrypt(password, salt, 64)).toString('hex');
+}
+
+async function verify(password, stored) {
+  if (typeof password !== 'string' || password.length > 128) return false;
+  const [salt, digest] = stored.split(':');
+  const actual = await scrypt(password, salt, 64);
+  const expected = Buffer.from(digest, 'hex');
+  return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
+}
+
+const adminHash = await passwordHash(adminPassword);
+const dummyHash = await passwordHash(crypto.randomBytes(20).toString('hex'));
+const attempts = new Map();
+
+function throttle(q, r, next) {
+  const key = q.ip;
+  let attempt = attempts.get(key);
+
+  if (!attempt || attempt.until < Date.now()) {
+    attempt = {count: 0, until: Date.now() + 900000};
+    attempts.set(key, attempt);
+  }
+
+  if (++attempt.count > 30) {
+    return r.status(429).json({message: 'Too many attempts — try again in 15 minutes'});
+  }
+
+  next();
+}
+
+setInterval(() => {
+  for (const [key, value] of attempts) {
+    if (value.until < Date.now()) attempts.delete(key);
+  }
+
+  db.prepare('DELETE FROM sessions WHERE expires < ?').run(Date.now());
+  db.prepare('DELETE FROM resets WHERE expires < ?').run(Date.now());
+}, 60000).unref();
+
+function cookie(q) {
+  return (q.headers.cookie || '')
+    .split(';')
+    .map(value => value.trim())
+    .find(value => value.startsWith('coach_session='))
+    ?.slice(14) || '';
+}
+
+function session(q) {
+  const token = cookie(q);
+  return token
+    ? db.prepare('SELECT * FROM sessions WHERE hash=? AND expires>?')
+      .get(hash(token), Date.now())
+    : null;
+}
+
+function issue(q, r, userId, role) {
+  const previous = cookie(q);
+  if (previous) db.prepare('DELETE FROM sessions WHERE hash=?').run(hash(previous));
+
+  const token = crypto.randomBytes(32).toString('hex');
+
+  db.prepare('INSERT INTO sessions VALUES(?,?,?,?)')
+    .run(hash(token), userId, role, Date.now() + 28800000);
+
+  r.cookie('coach_session', token, {
+    httpOnly: true,
+    secure: production,
+    sameSite: 'lax',
+    path: '/',
+    maxAge: 28800000
+  });
+}
+
+function auth(role) {
+  return (q, r, next) => {
+    const current = session(q);
+
+    if (!current) return r.status(401).json({message: 'Please sign in again'});
+    if (role && current.role !== role) {
+      return r.status(403).json({message: 'Access denied'});
+    }
+
+    if (current.role === 'member') {
+      q.user = db.prepare('SELECT * FROM users WHERE id=?').get(current.userId);
+
+      if (!q.user || q.user.status !== 'active') {
+        return r.status(403).json({message: 'Your account is inactive — contact the coach'});
+      }
+    }
+
+    q.session = current;
+    next();
+  };
+}
+
+const admin = auth('admin');
+const member = auth('member');
+
+function recipientOf(message) {
+  return message.from === 'coach' ? message.memberId : 'admin';
+}
+
+function messagesWithReads(messages) {
+  const receipts = new Map(
+    db.prepare('SELECT message_id, recipient_id, read_at FROM message_reads')
+      .all()
+      .map(row => [
+        JSON.stringify([row.message_id, row.recipient_id]),
+        row.read_at
+      ])
+  );
+
+  return messages.map(message => ({
+    ...message,
+    readAt: receipts.get(JSON.stringify([message.id, recipientOf(message)])) || null
+  }));
+}
+
+function notificationsFor(role, userId) {
+  const messages = messagesWithReads(readStore().messages);
+  const users = role === 'admin'
+    ? new Map(db.prepare('SELECT id, name FROM users').all().map(user => [user.id, user.name]))
+    : null;
+
+  const groups = new Map();
+
+  for (const message of messages) {
+    const incoming = role === 'admin'
+      ? message.from === 'member' && users.has(message.memberId)
+      : message.from === 'coach' && message.memberId === userId;
+
+    if (!incoming || message.readAt) continue;
+
+    const existing = groups.get(message.memberId);
+
+    if (!existing) {
+      groups.set(message.memberId, {
+        memberId: message.memberId,
+        senderName: role === 'admin' ? users.get(message.memberId) : 'Coach Andre',
+        count: 1,
+        preview: message.body.slice(0, 180),
+        createdAt: message.createdAt
+      });
+    } else {
+      existing.count++;
+
+      if (message.createdAt >= existing.createdAt) {
+        existing.preview = message.body.slice(0, 180);
+        existing.createdAt = message.createdAt;
+      }
+    }
+  }
+
+  const conversations = [...groups.values()]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+  return {
+    count: conversations.reduce((total, item) => total + item.count, 0),
+    conversations
+  };
+}
+
+function markMessagesRead(q, r, role) {
+  if (!Array.isArray(q.body.ids) ||
+      q.body.ids.length > 200 ||
+      q.body.ids.some(value => typeof value !== 'string')) {
+    fail('Choose valid messages');
+  }
+
+  const requested = new Set(q.body.ids);
+  const memberId = role === 'admin' ? text(q.body.memberId, 100) : q.user.id;
+  if (!memberId) fail('Choose a member');
+
+  const allowed = readStore().messages.filter(message =>
+    requested.has(message.id) &&
+    message.memberId === memberId &&
+    message.from === (role === 'admin' ? 'member' : 'coach')
+  );
+
+  const recipient = role === 'admin' ? 'admin' : q.user.id;
+  const timestamp = now();
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO message_reads(message_id, recipient_id, read_at)
+    VALUES(?,?,?)
+  `);
+
+  db.exec('BEGIN IMMEDIATE');
+
+  try {
+    allowed.forEach(message => insert.run(message.id, recipient, timestamp));
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+
+  r.json({ok: true});
+}
+
+app.get('/api/health', (_q, r) => r.json({ok: true, database: 'sqlite'}));
+
+app.get('/api/session', (q, r) => {
+  r.json({role: session(q)?.role || null});
+});
+
+app.post('/api/logout', (q, r) => {
+  db.prepare('DELETE FROM sessions WHERE hash=?').run(hash(cookie(q)));
+  r.clearCookie('coach_session', {path: '/'});
+  r.status(204).end();
+});
+
+app.post('/api/admin/login', throttle, async (q, r) => {
+  if (!(await verify(q.body.password, adminHash)) ||
+      text(q.body.email).toLowerCase() !== adminEmail.toLowerCase()) {
+    fail('Incorrect email or password', 401);
+  }
+
+  issue(q, r, 'admin', 'admin');
+  r.json({ok: true});
+});
+
+app.post('/api/member/register', throttle, async (q, r) => {
+  const address = email(q.body.email);
+  const name = text(q.body.name, 100);
+  if (!name) fail('Enter your name');
+
+  const password = await passwordHash(q.body.password);
+  const userId = id();
+
+  try {
+    db.prepare('INSERT INTO users(id,email,name,password,createdAt) VALUES(?,?,?,?,?)')
+      .run(userId, address, name, password, now());
+  } catch (e) {
+    if (String(e.message).includes('UNIQUE')) fail('An account already uses that email', 409);
+    throw e;
+  }
+
+  issue(q, r, userId, 'member');
+  r.status(201).json({ok: true});
+});
+
+app.post('/api/member/login', throttle, async (q, r) => {
+  const user = db.prepare('SELECT * FROM users WHERE email=?').get(email(q.body.email));
+  const valid = await verify(q.body.password, user?.password || dummyHash);
+
+  if (!valid || !user) fail('Incorrect email or password', 401);
+  if (user.status !== 'active') fail('Your account is inactive — contact the coach', 403);
+
+  db.prepare('UPDATE users SET lastLogin=? WHERE id=?').run(now(), user.id);
+  issue(q, r, user.id, 'member');
+  r.json({ok: true});
+});
+
+app.post('/api/member/password', member, async (q, r) => {
+  if (!await verify(q.body.current, q.user.password)) fail('Current password is incorrect');
+
+  const password = await passwordHash(q.body.password);
+  db.prepare('UPDATE users SET password=? WHERE id=?').run(password, q.user.id);
+  db.prepare('DELETE FROM sessions WHERE userId=?').run(q.user.id);
+  issue(q, r, q.user.id, 'member');
+  r.json({ok: true});
+});
+
+app.post('/api/member/reset', throttle, async (q, r) => {
+  const digest = hash(text(q.body.token, 100));
+  const reset = db.prepare('SELECT * FROM resets WHERE hash=? AND expires>?')
+    .get(digest, Date.now());
+
+  if (!reset) fail('This reset link is invalid or expired');
+  const password = await passwordHash(q.body.password);
+
+  db.exec('BEGIN IMMEDIATE');
+
+  try {
+    const live = db.prepare('SELECT * FROM resets WHERE hash=? AND expires>?')
+      .get(digest, Date.now());
+
+    if (!live) fail('Reset link already used');
+
+    db.prepare('UPDATE users SET password=? WHERE id=?').run(password, live.userId);
+    db.prepare('DELETE FROM resets WHERE userId=?').run(live.userId);
+    db.prepare('DELETE FROM sessions WHERE userId=?').run(live.userId);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+
+  r.json({ok: true});
+});
+
+function catalogProgram(program) {
+  const {content, ...publicFields} = program;
+  return publicFields;
+}
+
+app.get('/api/programs', (_q, r) => {
+  r.json(readStore().programs.filter(program => program.status === 'published').map(catalogProgram));
+});
+
+app.post('/api/track', (_q, r) => {
+  const store = readStore();
+  store.views++;
+  writeStore(store);
+  r.status(204).end();
+});
+
+app.post('/api/leads', throttle, (q, r) => {
+  const store = readStore();
+  const name = text(q.body.name, 100);
+  const address = email(q.body.email);
+  if (!name) fail('Name is required');
+
+  store.leads.unshift({
+    id: id(),
+    name,
+    email: address,
+    goal: text(q.body.goal),
+    source: 'Website',
+    status: 'new',
+    createdAt: now()
+  });
+
+  writeStore(store);
+  r.status(201).json({ok: true});
+});
+
+app.post('/api/orders', member, (q, r) => {
+  const store = readStore();
+  const program = store.programs.find(item =>
+    (item.id === q.body.programId || item.title === q.body.program) &&
+    item.status === 'published'
+  );
+
+  if (!program) fail('Program not available', 404);
+
+  const existing = store.orders.find(order =>
+    order.memberId === q.user.id &&
+    order.programId === program.id &&
+    order.status === 'pending'
+  );
+
+  if (existing) {
+    return r.json({
+      reference: existing.id,
+      message: 'Your existing request is awaiting the coach’s review'
+    });
+  }
+
+  const order = {
+    id: id(),
+    memberId: q.user.id,
+    name: q.user.name,
+    email: q.user.email,
+    phone: text(q.body.phone, 60),
+    programId: program.id,
+    program: program.title,
+    amount: program.price,
+    status: 'pending',
+    createdAt: now()
+  };
+
+  store.orders.unshift(order);
+  writeStore(store);
+
+  r.status(201).json({
+    reference: order.id,
+    message: 'Your request is saved — your coach will arrange payment and program access'
+  });
+});
+
+app.get('/api/member/dashboard', member, (q, r) => {
+  const store = readStore();
+  const userId = q.user.id;
+
+  r.json({
+    user: publicUser(q.user),
+    assignments: store.assignments
+      .filter(assignment => assignment.memberId === userId)
+      .map(assignment => ({
+        ...assignment,
+        program: store.programs.find(program => program.id === assignment.programId) ||
+          {title: 'Archived program'}
+      })),
+    checkins: store.checkins.filter(item => item.memberId === userId),
+    messages: messagesWithReads(store.messages.filter(item => item.memberId === userId)),
+    bookings: store.bookings.filter(item => item.memberId === userId),
+    orders: store.orders.filter(item => item.memberId === userId)
+  });
+});
+
+app.get('/api/member/notifications', member, (q, r) => {
+  r.json(notificationsFor('member', q.user.id));
+});
+
+app.get('/api/admin/notifications', admin, (_q, r) => {
+  r.json(notificationsFor('admin', 'admin'));
+});
+
+app.post('/api/member/messages/read', member, (q, r) => {
+  markMessagesRead(q, r, 'member');
+});
+
+app.post('/api/admin/messages/read', admin, (q, r) => {
+  markMessagesRead(q, r, 'admin');
+});
+
+app.post('/api/member/checkins', member, (q, r) => {
+  const store = readStore();
+
+  const checkin = {
+    id: id(),
+    memberId: q.user.id,
+    createdAt: now(),
+    weight: q.body.weight === '' || q.body.weight == null
+      ? null
+      : number(q.body.weight, 20, 400),
+    completed: number(q.body.completed, 0, 30),
+    planned: number(q.body.planned, 1, 30),
+    notes: text(q.body.notes),
+    reply: ''
+  };
+
+  if (checkin.completed > checkin.planned) {
+    fail('Completed sessions cannot exceed planned sessions');
+  }
+
+  store.checkins.unshift(checkin);
+  writeStore(store);
+  r.status(201).json(checkin);
+});
+
+app.post('/api/member/messages', member, (q, r) => {
+  const body = text(q.body.body);
+  if (!body) fail('Enter a message');
+
+  const store = readStore();
+  store.messages.push({
+    id: id(),
+    memberId: q.user.id,
+    from: 'member',
+    body,
+    createdAt: now()
+  });
+
+  writeStore(store);
+  r.status(201).json({ok: true});
+});
+
+app.get('/api/services', (_q, r) => {
+  r.json(readStore().services.filter(service => service.active));
+});
+
+app.post('/api/bookings', member, (q, r) => {
+  const store = readStore();
+  const service = store.services.find(item => item.id === q.body.serviceId && item.active);
+  const time = Date.parse(q.body.requestedAt);
+
+  if (!service || !Number.isFinite(time) ||
+      time < Date.now() || time > Date.now() + 180 * 86400000) {
+    fail('Choose a service and a future date within six months');
+  }
+
+  const booking = {
+    id: id(),
+    memberId: q.user.id,
+    name: q.user.name,
+    serviceId: service.id,
+    title: service.title,
+    duration: service.duration,
+    price: service.price,
+    requestedAt: new Date(time).toISOString(),
+    status: 'requested',
+    notes: text(q.body.notes, 500),
+    createdAt: now()
+  };
+
+  store.bookings.unshift(booking);
+  writeStore(store);
+  r.status(201).json(booking);
+});
+
+app.patch('/api/member/bookings/:id', member, (q, r) => {
+  const store = readStore();
+  const booking = store.bookings.find(item =>
+    item.id === q.params.id && item.memberId === q.user.id
+  );
+
+  if (!booking) fail('Not found', 404);
+  if (!['requested', 'confirmed'].includes(booking.status)) {
+    fail('This appointment cannot be cancelled');
+  }
+
+  booking.status = 'cancelled';
+  writeStore(store);
+  r.json(booking);
+});
+
+app.get('/api/transformations', (_q, r) => {
+  r.json(readStore().transformations
+    .filter(item => item.published && item.consent)
+    .map(({consent, ...item}) => item));
+});
+
+app.get('/api/admin/dashboard', admin, (_q, r) => {
+  const store = readStore();
+  const users = db.prepare('SELECT * FROM users ORDER BY createdAt DESC').all();
+
+  const clients = users.map(user => {
+    const checkin = store.checkins.find(item => item.memberId === user.id);
+
+    return {
+      ...publicUser(user),
+      program: store.assignments
+        .filter(item => item.memberId === user.id)
+        .map(item => store.programs.find(program => program.id === item.programId)?.title)
+        .filter(Boolean)
+        .join(', ') || 'Not assigned',
+      progress: 0,
+      compliance: checkin ? Math.round(checkin.completed / checkin.planned * 100) : 0,
+      nextCheckIn: checkin ? checkin.createdAt.slice(0, 10) : 'No check-in yet'
+    };
+  });
+
+  const programs = store.programs.map(program => ({
+    ...program,
+    sales: store.orders.filter(order =>
+      order.programId === program.id && order.status === 'paid'
+    ).length
+  }));
+
+  r.json({
+    ...store,
+    messages: messagesWithReads(store.messages),
+    programs,
+    clients,
+    stats: {
+      revenue: store.orders.filter(order => order.status === 'paid')
+        .reduce((total, order) => total + order.amount, 0),
+      orders: store.orders.length,
+      clients: clients.filter(client => client.status === 'active').length,
+      leads: store.leads.filter(lead => lead.status === 'new').length,
+      views: store.views
+    }
+  });
+});
+
+function programInput(input) {
+  const title = text(input.title, 120);
+  if (!title) fail('Title is required');
+
+  return {
+    title,
+    tag: text(input.tag, 40),
+    subtitle: text(input.subtitle, 150),
+    duration: text(input.duration, 50),
+    level: text(input.level, 50),
+    price: number(input.price, 0, 100000),
+    status: choice(input.status, ['draft', 'published']),
+    description: text(input.description, 5000),
+    features: Array.isArray(input.features)
+      ? input.features.slice(0, 30).map(feature => text(feature, 250))
+      : [],
+    content: text(input.content, 30000)
+  };
+}
+
+app.post('/api/admin/programs', admin, (q, r) => {
+  const store = readStore();
+  const program = {id: id(), ...programInput(q.body)};
+  store.programs.unshift(program);
+  writeStore(store);
+  r.status(201).json(program);
+});
+
+app.put('/api/admin/programs/:id', admin, (q, r) => {
+  const store = readStore();
+  const program = store.programs.find(item => item.id === q.params.id);
+  if (!program) fail('Not found', 404);
+
+  Object.assign(program, programInput(q.body));
+  writeStore(store);
+  r.json(program);
+});
+
+app.delete('/api/admin/programs/:id', admin, (q, r) => {
+  const store = readStore();
+
+  if (store.assignments.some(item => item.programId === q.params.id)) {
+    fail('This program is assigned to a member — set it to draft to remove it from sale');
+  }
+
+  store.programs = store.programs.filter(item => item.id !== q.params.id);
+  writeStore(store);
+  r.status(204).end();
+});
+
+for (const type of ['orders', 'leads']) {
+  app.patch(`/api/admin/${type}/:id`, admin, (q, r) => {
+    const store = readStore();
+    const item = store[type].find(value => value.id === q.params.id);
+    if (!item) fail('Not found', 404);
+
+    item.status = choice(q.body.status, type === 'orders'
+      ? ['pending', 'paid', 'cancelled', 'refunded']
+      : ['new', 'contacted', 'qualified', 'converted', 'closed']);
+
+    writeStore(store);
+    r.json(item);
+  });
+}
+
+app.patch('/api/admin/members/:id', admin, (q, r) => {
+  const status = choice(q.body.status, ['active', 'inactive']);
+  db.prepare('UPDATE users SET status=? WHERE id=?').run(status, q.params.id);
+
+  if (status === 'inactive') {
+    db.prepare('DELETE FROM sessions WHERE userId=?').run(q.params.id);
+  }
+
+  r.json({ok: true});
+});
+
+app.post('/api/admin/members/:id/reset', admin, (q, r) => {
+  if (!db.prepare('SELECT id FROM users WHERE id=?').get(q.params.id)) {
+    fail('Not found', 404);
+  }
+
+  const token = crypto.randomBytes(32).toString('hex');
+
+  db.exec('BEGIN IMMEDIATE');
+
+  try {
+    db.prepare('DELETE FROM resets WHERE userId=?').run(q.params.id);
+    db.prepare('INSERT INTO resets VALUES(?,?,?)')
+      .run(hash(token), q.params.id, Date.now() + 1800000);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+
+  r.json({path: `/member?reset=${token}`});
+});
+
+app.post('/api/admin/assignments', admin, (q, r) => {
+  const store = readStore();
+
+  if (!db.prepare('SELECT id FROM users WHERE id=?').get(q.body.memberId) ||
+      !store.programs.some(program => program.id === q.body.programId)) {
+    fail('Choose a member and a program');
+  }
+
+  if (!store.assignments.some(item =>
+    item.memberId === q.body.memberId && item.programId === q.body.programId
+  )) {
+    store.assignments.push({
+      id: id(),
+      memberId: q.body.memberId,
+      programId: q.body.programId,
+      createdAt: now()
+    });
+  }
+
+  writeStore(store);
+  r.json({ok: true});
+});
+
+app.delete('/api/admin/assignments/:id', admin, (q, r) => {
+  const store = readStore();
+  store.assignments = store.assignments.filter(item => item.id !== q.params.id);
+  writeStore(store);
+  r.status(204).end();
+});
+
+app.post('/api/admin/messages', admin, (q, r) => {
+  const store = readStore();
+  const body = text(q.body.body);
+
+  if (!body || !db.prepare('SELECT id FROM users WHERE id=?').get(q.body.memberId)) {
+    fail('Select a member and enter a message');
+  }
+
+  store.messages.push({
+    id: id(),
+    memberId: q.body.memberId,
+    from: 'coach',
+    body,
+    createdAt: now()
+  });
+
+  writeStore(store);
+  r.status(201).json({ok: true});
+});
+
+app.patch('/api/admin/checkins/:id', admin, (q, r) => {
+  const store = readStore();
+  const checkin = store.checkins.find(item => item.id === q.params.id);
+  if (!checkin) fail('Not found', 404);
+
+  checkin.reply = text(q.body.reply);
+  writeStore(store);
+  r.json(checkin);
+});
+
+app.patch('/api/admin/bookings/:id', admin, (q, r) => {
+  const store = readStore();
+  const booking = store.bookings.find(item => item.id === q.params.id);
+  if (!booking) fail('Not found', 404);
+
+  const status = choice(q.body.status, ['requested', 'confirmed', 'completed', 'cancelled']);
+
+  if (status === 'confirmed') {
+    const start = Date.parse(booking.requestedAt);
+    const end = start + booking.duration * 60000;
+
+    if (start < Date.now()) fail('Cannot confirm an appointment in the past');
+
+    if (store.bookings.some(other =>
+      other.id !== booking.id &&
+      other.status === 'confirmed' &&
+      Date.parse(other.requestedAt) < end &&
+      Date.parse(other.requestedAt) + other.duration * 60000 > start
+    )) {
+      fail('Another confirmed appointment overlaps this time', 409);
+    }
+  }
+
+  booking.status = status;
+  writeStore(store);
+  r.json(booking);
+});
+
+app.post('/api/admin/services', admin, (q, r) => {
+  const store = readStore();
+  const input = q.body;
+  const title = text(input.title, 120);
+  if (!title) fail('Title is required');
+
+  const service = {
+    id: input.id || id(),
+    title,
+    duration: number(input.duration, 15, 180),
+    price: number(input.price, 0, 10000),
+    description: text(input.description),
+    active: input.active === true
+  };
+
+  const index = store.services.findIndex(item => item.id === service.id);
+  if (index < 0) store.services.push(service);
+  else store.services[index] = service;
+
+  writeStore(store);
+  r.json(service);
+});
+
+function image(value) {
+  if (!value) return '';
+
+  if (typeof value !== 'string' ||
+      value.length > 2800000 ||
+      !/^data:image\/(png|jpeg|webp);base64,/.test(value)) {
+    fail('Use a JPEG, PNG or WebP image under 2 MB');
+  }
+
+  const bytes = Buffer.from(value.split(',')[1], 'base64');
+
+  if (!(bytes[0] === 255 && bytes[1] === 216) &&
+      !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) &&
+      !(bytes.toString('ascii', 0, 4) === 'RIFF' &&
+        bytes.toString('ascii', 8, 12) === 'WEBP')) {
+    fail('Invalid image');
+  }
+
+  return value;
+}
+
+app.post('/api/admin/transformations', admin, (q, r) => {
+  const store = readStore();
+  const input = q.body;
+
+  const transformation = {
+    id: input.id || id(),
+    name: text(input.name, 100),
+    title: text(input.title, 150),
+    story: text(input.story, 2500),
+    duration: text(input.duration, 100),
+    before: image(input.before),
+    after: image(input.after),
+    consent: input.consent === true,
+    published: input.published === true
+  };
+
+  if (!transformation.name || !transformation.title) fail('Name and title are required');
+
+  if (transformation.published &&
+      (!transformation.consent || !transformation.before || !transformation.after)) {
+    fail('Before and after photos and recorded permission are required to publish');
+  }
+
+  const index = store.transformations.findIndex(item => item.id === transformation.id);
+  if (index < 0) store.transformations.push(transformation);
+  else store.transformations[index] = transformation;
+
+  writeStore(store);
+  r.json({ok: true});
+});
+
+app.delete('/api/admin/transformations/:id', admin, (q, r) => {
+  const store = readStore();
+  store.transformations = store.transformations.filter(item => item.id !== q.params.id);
+  writeStore(store);
+  r.status(204).end();
+});
+
+app.use('/api', (_q, r) => r.status(404).json({message: 'API route not found'}));
+
+app.use(express.static(path.resolve('dist')));
+app.get('/{*path}', (_q, r) => r.sendFile(path.resolve('dist/index.html')));
+
+app.use((error, _q, r, _next) => {
+  if (!error.status) console.error(error);
+
+  r.status(error.status || 500).json({
+    message: error.status ? error.message : 'Server error — please try again'
+  });
+});
+
+const server = app.listen(process.env.PORT || 10000, () => {
+  console.log(`Coach platform ready on port ${process.env.PORT || 10000}`);
+});
+
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    server.close(() => {
+      db.close();
+      process.exit(0);
+    });
+  });
+}

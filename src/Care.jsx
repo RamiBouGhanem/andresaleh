@@ -1,45 +1,419 @@
-import React,{useState,useEffect,useRef} from 'react';
-import {ArrowLeft,ArrowRight,Activity,CalendarDays,Check,ChevronLeft,ChevronRight,LogOut} from 'lucide-react';
-import './care.css';
-export async function api(path,method='GET',body){const r=await fetch('/api'+path,{method,headers:{'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const data=r.status===204?null:await r.json().catch(()=>({message:'Backend unavailable. Start with npm run dev.'}));if(!r.ok)throw new Error(data?.message||'Request failed.');return data}
-export const values=e=>Object.fromEntries(new FormData(e.currentTarget));
-export function TaskForm({children,submit,className=''}){const[busy,setBusy]=useState(false),[error,setError]=useState('');return <form className={'care-form '+className} onSubmit={async e=>{e.preventDefault();const form=e.currentTarget,v=values(e);setBusy(true);setError('');try{await submit(v,form)}catch(e){setError(e.message)}finally{setBusy(false)}}}>{children}{error&&<p role="alert" className="form-error">{error}</p>}<button disabled={busy} className="primary-btn">{busy?'Saving…':'Save / submit'} <ArrowRight size={16}/></button></form>}
-export function Carousel({children,label}) {
- const ref=useRef(), touched=useRef(false);
- const cards=React.Children.toArray(children), count=cards.length;
- const [active,setActive]=useState(0), [overflow,setOverflow]=useState(false), [hint,setHint]=useState(false);
- const moveTo=index=>{const el=ref.current;if(!el)return;const child=el.children[index];if(child)el.scrollTo({left:child.offsetLeft-el.children[0].offsetLeft,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});};
- useEffect(()=>{
-  const el=ref.current;if(!el)return;let timers=[],frame;
-  const update=()=>{setOverflow(el.scrollWidth>el.clientWidth+8);const first=el.children[0];if(!first)return;let best=0,distance=Infinity;Array.from(el.children).forEach((child,i)=>{const d=Math.abs(child.offsetLeft-first.offsetLeft-el.scrollLeft);if(d<distance){distance=d;best=i}});setActive(best);};
-  const scroll=()=>{cancelAnimationFrame(frame);frame=requestAnimationFrame(update)};
-  const interrupt=()=>{touched.current=true;timers.forEach(clearTimeout);el.style.scrollSnapType='';setHint(false);};
-  const resize=new ResizeObserver(update);resize.observe(el);update();
-  const observer=new IntersectionObserver(entries=>{if(!entries[0].isIntersecting||touched.current||el.scrollWidth<=el.clientWidth+8)return;observer.disconnect();if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;setHint(true);timers.push(setTimeout(()=>{if(touched.current)return;el.style.scrollSnapType='none';el.scrollTo({left:42,behavior:'smooth'});},700));timers.push(setTimeout(()=>{if(touched.current)return;el.scrollTo({left:0,behavior:'smooth'});},1450));timers.push(setTimeout(()=>{el.style.scrollSnapType='';setHint(false)},2250));},{threshold:.5});observer.observe(el);
-  el.addEventListener('scroll',scroll,{passive:true});['pointerdown','wheel','keydown'].forEach(event=>el.addEventListener(event,interrupt,{passive:true}));
-  return()=>{timers.forEach(clearTimeout);cancelAnimationFrame(frame);observer.disconnect();resize.disconnect();el.removeEventListener('scroll',scroll);['pointerdown','wheel','keydown'].forEach(event=>el.removeEventListener(event,interrupt));el.style.scrollSnapType='';};
- },[count]);
- const manual=index=>{touched.current=true;ref.current.style.scrollSnapType='';setHint(false);moveTo(index)};
- return <div className={`carousel-wrap${overflow?' has-overflow':''}${hint?' swipe-hint-active':''}`}><div className="carousel-controls"><span><b>{label}</b><small>{overflow?'Swipe to explore':'Find your fit'}</small></span><div className="carousel-arrows"><button aria-label="Previous cards" disabled={!overflow||active===0} onClick={()=>manual(Math.max(0,active-1))}><ChevronLeft/></button><button aria-label="Next cards" disabled={!overflow||active>=count-1} onClick={()=>manual(Math.min(count-1,active+1))}><ChevronRight/></button></div></div><div className="horizontal-cards" ref={ref} tabIndex="0" role="region" aria-label={label}>{cards}</div>{overflow&&<div className="carousel-footer"><span className="swipe-cue"><ArrowLeft size={14}/><span>Swipe to explore</span><ArrowRight size={14}/></span><div className="carousel-dots" aria-label={`${label} navigation`}>{cards.map((_,index)=><button key={index} className={index===active?'active':''} aria-label={`Show ${label} card ${index+1}`} aria-current={index===active?'true':undefined} onClick={()=>manual(index)}/>)}</div><small className="carousel-position">{String(active+1).padStart(2,'0')} / {String(count).padStart(2,'0')}</small></div>}</div>
+import React, {useEffect, useRef, useState} from 'react';
+import {api, TaskForm, cleanCopy} from './Care';
+import {MessageFeed, refreshNotifications} from './Notifications';
+
+export default function CareAdmin({data, load, section, conversation}) {
+  const [selected, setSelected] = useState('');
+  const [notice, setNotice] = useState('');
+  const [editing, setEditing] = useState(null);
+  const [query, setQuery] = useState('');
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetLink, setResetLink] = useState('');
+  const messageSection = useRef(null);
+
+  const member = data.clients.find(client => client.id === selected);
+
+  useEffect(() => {
+    if (section === 'clients' && conversation?.memberId) {
+      setSelected(conversation.memberId);
+      setQuery('');
+      setNotice('');
+      setResetLink('');
+    }
+  }, [section, conversation]);
+
+  useEffect(() => {
+    if (!member || conversation?.memberId !== selected) return;
+
+    const frame = requestAnimationFrame(() => {
+      messageSection.current?.scrollIntoView({
+        behavior: 'auto',
+        block: 'start'
+      });
+      messageSection.current?.focus({preventScroll: true});
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [selected, conversation, member?.id]);
+
+  async function act(action) {
+    try {
+      await action();
+      await load();
+      setNotice('Saved');
+    } catch (e) {
+      setNotice(e.message);
+    }
+  }
+
+  async function submitAction(action) {
+    await action();
+    await load();
+    setNotice('Saved');
+  }
+
+  function chooseMember(memberId) {
+    setSelected(memberId);
+    setNotice('');
+    setResetLink('');
+  }
+
+  return (
+    <section className="admin-card care-admin">
+      <header className="care-admin-heading">
+        <h2>
+          {section === 'clients'
+            ? 'Members & coaching'
+            : section === 'physio'
+              ? 'Physiotherapy appointments'
+              : 'Client transformations'}
+        </h2>
+        <button className="ghost-btn" onClick={() => act(async () => {})}>Refresh</button>
+      </header>
+
+      {notice && <p role="status" className="success-care">{notice}</p>}
+
+      {section === 'clients' && <>
+        <label className="care-search">
+          Find a member
+          <input placeholder="Name or email" value={query}
+            onChange={event => setQuery(event.target.value)}/>
+        </label>
+
+        <div className="care-columns">
+          <aside>
+            {data.clients
+              .filter(client =>
+                `${client.name} ${client.email}`.toLowerCase().includes(query.toLowerCase())
+              )
+              .map(client => {
+                const unread = data.messages.filter(message =>
+                  message.memberId === client.id &&
+                  message.from === 'member' &&
+                  !message.readAt
+                ).length;
+
+                return (
+                  <button
+                    className={`member-pick ${selected === client.id ? 'chosen' : ''}`}
+                    onClick={() => chooseMember(client.id)}
+                    key={client.id}
+                  >
+                    <span className="member-pick-title">
+                      <b>{client.name}</b>
+                      {unread > 0 && <span className="inline-unread">{unread}</span>}
+                    </span>
+                    <small>{client.email}</small>
+                    <span>{client.status}</span>
+                  </button>
+                );
+              })}
+
+            {!data.clients.length && <p>Members appear here when they create an account</p>}
+          </aside>
+
+          {member ? (
+            <section key={member.id}>
+              <h3>{member.name}</h3>
+              <p>{member.email} · Joined {new Date(member.createdAt).toLocaleDateString()}</p>
+
+              <div className="care-actions">
+                <button className="ghost-btn" onClick={() => act(() =>
+                  api(`/admin/members/${member.id}`, 'PATCH', {
+                    status: member.status === 'active' ? 'inactive' : 'active'
+                  })
+                )}>
+                  {member.status === 'active' ? 'Deactivate account' : 'Activate account'}
+                </button>
+
+                <button className="ghost-btn" disabled={resetBusy} onClick={async () => {
+                  setResetBusy(true);
+                  setResetLink('');
+
+                  try {
+                    const result = await api(`/admin/members/${member.id}/reset`, 'POST', {});
+                    setResetLink(location.origin + result.path);
+                    setNotice('Reset link created — valid for 30 minutes');
+                  } catch (e) {
+                    setNotice(e.message);
+                  } finally {
+                    setResetBusy(false);
+                  }
+                }}>
+                  {resetBusy ? 'Creating link…' : 'Create reset link'}
+                </button>
+              </div>
+
+              {resetLink && (
+                <div className="reset-link-box">
+                  <label>
+                    Private reset link
+                    <input readOnly value={resetLink}
+                      onFocus={event => event.target.select()}/>
+                  </label>
+                  <button className="ghost-btn" onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(resetLink);
+                      setNotice('Reset link copied');
+                    } catch {
+                      setNotice('Select the link above and copy it');
+                    }
+                  }}>Copy link</button>
+                </div>
+              )}
+
+              <h3>Assigned programs</h3>
+
+              {data.assignments
+                .filter(assignment => assignment.memberId === member.id)
+                .map(assignment => (
+                  <div key={assignment.id} className="care-list-row">
+                    <span>
+                      {cleanCopy(data.programs.find(program =>
+                        program.id === assignment.programId
+                      )?.title || 'Archived program')}
+                    </span>
+                    <button className="ghost-btn" onClick={() => act(() =>
+                      api(`/admin/assignments/${assignment.id}`, 'DELETE')
+                    )}>Revoke access</button>
+                  </div>
+                ))}
+
+              <TaskForm submit={values => submitAction(() =>
+                api('/admin/assignments', 'POST', {
+                  memberId: member.id,
+                  programId: values.programId
+                })
+              )} buttonLabel="Grant access">
+                <label>
+                  Grant program access
+                  <select name="programId" required>
+                    <option value="">Choose program</option>
+                    {data.programs.map(program =>
+                      <option value={program.id} key={program.id}>{cleanCopy(program.title)}</option>
+                    )}
+                  </select>
+                </label>
+              </TaskForm>
+
+              <h3>Check-ins</h3>
+
+              {data.checkins
+                .filter(checkin => checkin.memberId === member.id)
+                .map(checkin => (
+                  <article className="care-card" key={checkin.id}>
+                    <b>{new Date(checkin.createdAt).toLocaleString()}</b>
+                    <p>
+                      {checkin.completed}/{checkin.planned} completed · {checkin.weight ?? 'No weight entered'}
+                    </p>
+                    <p>{checkin.notes}</p>
+
+                    <TaskForm submit={values => submitAction(() =>
+                      api(`/admin/checkins/${checkin.id}`, 'PATCH', values)
+                    )} buttonLabel="Save feedback">
+                      <label>
+                        Coach feedback
+                        <textarea name="reply" defaultValue={checkin.reply} maxLength="2000"/>
+                      </label>
+                    </TaskForm>
+                  </article>
+                ))}
+
+              <section ref={messageSection} tabIndex={-1} className="conversation-section">
+                <h3>Messages with {member.name}</h3>
+
+                <MessageFeed
+                  role="admin"
+                  memberId={member.id}
+                  messages={data.messages.filter(message => message.memberId === member.id)}
+                />
+
+                <TaskForm buttonLabel="Send message" submit={async (values, form) => {
+                  await api('/admin/messages', 'POST', {
+                    memberId: member.id,
+                    body: values.body
+                  });
+                  form.reset();
+                  await load();
+                  refreshNotifications();
+                }}>
+                  <label>
+                    Reply to member
+                    <textarea name="body" required maxLength="2000" placeholder="Write your message"/>
+                  </label>
+                </TaskForm>
+              </section>
+            </section>
+          ) : (
+            <div className="empty-care">
+              <h3>Select a member</h3>
+              <p>Review progress, assign content and keep the conversation in one place</p>
+            </div>
+          )}
+        </div>
+      </>}
+
+      {section === 'physio' && <>
+        <p>Times use your device’s time zone — confirmed appointments cannot overlap</p>
+        {!data.bookings.length && <p>No appointment requests yet</p>}
+
+        {data.bookings.map(booking => (
+          <article className="care-card" key={booking.id}>
+            <h3>{cleanCopy(booking.title)}</h3>
+            <p>
+              {booking.name} · {new Date(booking.requestedAt).toLocaleString()} · {booking.duration} minutes · ${booking.price}
+            </p>
+            <p>{booking.notes}</p>
+            <label>
+              Appointment status
+              <select value={booking.status} onChange={event => act(() =>
+                api(`/admin/bookings/${booking.id}`, 'PATCH', {status: event.target.value})
+              )}>
+                {['requested', 'confirmed', 'completed', 'cancelled'].map(value =>
+                  <option key={value}>{value}</option>
+                )}
+              </select>
+            </label>
+          </article>
+        ))}
+
+        <h3>Session types & pricing</h3>
+        <button className="primary-btn" onClick={() => setEditing({active: true})}>
+          Add session type
+        </button>
+
+        {data.services.map(service => (
+          <div className="care-list-row" key={service.id}>
+            <span>
+              {cleanCopy(service.title)} · {service.duration} min · ${service.price} · {service.active ? 'Visible' : 'Hidden'}
+            </span>
+            <button className="ghost-btn" onClick={() => setEditing(service)}>Edit</button>
+          </div>
+        ))}
+
+        {editing && (
+          <TaskForm key={editing.id || 'new'} buttonLabel="Save session"
+            submit={async values => {
+              await api('/admin/services', 'POST', {
+                ...values,
+                id: editing.id,
+                active: values.active === 'on'
+              });
+              setEditing(null);
+              await load();
+            }}>
+            <label>Session name<input name="title" defaultValue={editing.title} required/></label>
+            <label>Duration, minutes<input name="duration" type="number" min="15" max="180"
+              defaultValue={editing.duration || 60} required/></label>
+            <label>Price, USD<input name="price" type="number" min="0"
+              defaultValue={editing.price || 0} required/></label>
+            <label>Description<textarea name="description" defaultValue={editing.description}/></label>
+            <label className="checkbox-care">
+              <input name="active" type="checkbox" defaultChecked={editing.active}/> Show on website
+            </label>
+            <button type="button" className="ghost-btn" onClick={() => setEditing(null)}>Cancel</button>
+          </TaskForm>
+        )}
+      </>}
+
+      {section === 'shifts' && <>
+        <p>Add client photos and record permission before publishing</p>
+        <button className="primary-btn" onClick={() => setEditing({})}>Add transformation</button>
+
+        {data.transformations.map(item => (
+          <div className="care-list-row" key={item.id}>
+            <span>{item.name} · {cleanCopy(item.title)} · {item.published ? 'Published' : 'Draft'}</span>
+            <button className="ghost-btn" onClick={() => setEditing(item)}>Edit</button>
+            <button className="ghost-btn" onClick={() => {
+              if (window.confirm('Delete this transformation?')) {
+                act(() => api(`/admin/transformations/${item.id}`, 'DELETE'));
+              }
+            }}>Delete</button>
+          </div>
+        ))}
+
+        {editing && (
+          <TransformationEditor
+            key={editing.id || 'new'}
+            item={editing}
+            close={() => setEditing(null)}
+            save={async values => {
+              await api('/admin/transformations', 'POST', values);
+              setEditing(null);
+              await load();
+            }}
+          />
+        )}
+      </>}
+    </section>
+  );
 }
 
-export function Physio({preview=false}){const[services,setServices]=useState([]),[selected,setSelected]=useState(null),[error,setError]=useState(''),[saved,setSaved]=useState(false);useEffect(()=>{api('/services').then(setServices).catch(e=>setError(e.message))},[]);if(preview)return <section className="section care-section physio-preview" id="physio"><div className="section-heading"><div><p className="eyebrow">Physiotherapy</p><h2>Move better.</h2></div></div><a className="physio-visual physio-entry" href="/physiotherapy" aria-label="Explore physiotherapy sessions and programs"><img src="/images/real-physio.webp" alt="Physiotherapist guiding a rehabilitation exercise" loading="lazy" width="900" height="1350"/><span className="physio-entry-caption"><span><b>Physiotherapy & recovery</b><small>Explore sessions & programs</small></span><ArrowRight size={22}/></span></a></section>;return <section className="section care-section" id="physio"><div className="physio-lead"><div className="section-heading"><div><p className="eyebrow">Physiotherapy</p><h2>Move better.<br/><em>Come back stronger</em></h2></div><p>A clear path from assessment to recovery and a confident return to training.</p></div><figure className="physio-visual"><img src="/images/real-physio.webp" alt="Physiotherapist guiding a client through a rehabilitation exercise" loading="lazy" width="1122" height="1402"/><figcaption><Activity/><span><b>Coach-led care</b>Built for active bodies</span></figcaption></figure></div>{error&&<p role="alert">{error}</p>}<div className="care-services-grid" aria-label="Physiotherapy sessions">{services.map((s,index)=><article className="care-card" key={s.id}><div className="care-step"><span>0{index+1}</span><Activity className="care-symbol"/></div><p className="eyebrow">{s.duration} minute session</p><h3>{s.title}</h3><p>{s.description}</p><strong>${s.price} USD</strong><button className="primary-btn" onClick={async()=>{try{const session=await api('/session');if(session.role!=='member'){location.href='/member?return=physio';return}setSaved(false);setSelected(s)}catch(e){setError(e.message)}}}>Request a session <ArrowRight size={16}/></button></article>)}</div>{selected&&<dialog ref={node=>{if(node&&!node.open)node.showModal()}} onCancel={()=>setSelected(null)} className="care-dialog"><button className="close-care" aria-label="Close" onClick={()=>setSelected(null)}>×</button><h3>{selected.title}</h3><p className="service-dialog-description">{selected.description}</p>{saved?<p role="status">Request saved. Your coach will confirm the time in your member area.</p>:<TaskForm submit={async v=>{await api('/bookings','POST',{serviceId:selected.id,requestedAt:new Date(v.time).toISOString(),notes:v.notes});setSaved(true)}}><label>Preferred date and time (your local time)<input name="time" type="datetime-local" required/></label><label>Scheduling note (optional)<textarea name="notes" maxLength="500" placeholder="For example, preferred contact time"/></label><p>Requests are not confirmed appointments. Check your member area for confirmation.</p></TaskForm>}</dialog>}</section>}
+function TransformationEditor({item, save, close}) {
+  const [before, setBefore] = useState(item.before || '');
+  const [after, setAfter] = useState(item.after || '');
+  const [error, setError] = useState('');
 
-const demoShifts=[
- {id:'recomposition',photo:'/images/demo-recomposition.webp',title:'A stronger foundation',goal:'Body recomposition'},
- {id:'strength',photo:'/images/demo-strength.webp',title:'Built through consistency',goal:'Strength & muscle'},
- {id:'transformation',photo:'/images/demo-transformation.webp',title:'A different kind of confidence',goal:'A leaner, stronger body'}
-];
-export function Shifts(){const[items,setItems]=useState([]),[error,setError]=useState('');useEffect(()=>{api('/transformations').then(setItems).catch(e=>setError(e.message))},[]);return <section id="results" className="section results-showcase"><div className="section-heading"><div><p className="eyebrow">The shift</p><h2>The <em>transformations</em></h2></div><p>Strength, confidence and a body that moves better</p></div>{error&&<p role="alert">{error}</p>}<Carousel label="Before & after">{items.length?items.map(t=><article className="shift-card" key={t.id}><div className="before-after"><figure><img src={t.before} alt={`${t.name} before`} loading="lazy"/><figcaption>Before</figcaption></figure><figure><img src={t.after} alt={`${t.name} after`} loading="lazy"/><figcaption>After</figcaption></figure></div><div><p className="eyebrow">{t.duration}</p><h3>{t.title}</h3><p>{t.story}</p><b>{t.name}</b></div></article>):demoShifts.map(t=><article className="shift-card demo-shift" key={t.id}><div className="demo-comparison"><img src={t.photo} alt={`Fictional before and after example: ${t.goal}`} loading="lazy" width="1200" height="800"/><span className="comparison-before">Before</span><span className="comparison-after">After</span><small className="demo-photo-label">DEMO SAMPLE</small></div><div className="demo-shift-copy"><p className="eyebrow">{t.goal}</p><h3>{t.title}</h3><p>Illustrative transformation preview.</p></div></article>)}</Carousel>{!items.length&&<p className="demo-disclosure">Demo photos — illustrative samples, not client results.</p>}</section>}
+  function file(event, setImage) {
+    setError('');
+    const image = event.target.files[0];
+    if (!image) return;
 
-export default function Member(){const[data,setData]=useState(null),[mode,setMode]=useState('login'),[loading,setLoading]=useState(true),[tab,setTab]=useState('programs'),[notice,setNotice]=useState('');const reset=new URLSearchParams(location.search).get('reset');const load=async()=>{setData(await api('/member/dashboard'))};useEffect(()=>{load().catch(()=>{}).finally(()=>setLoading(false))},[]);useEffect(()=>{if(!data)return;const timer=setInterval(()=>load().catch(()=>{}),30000);return()=>clearInterval(timer)},[!!data]);
- if(loading)return <main className="member-shell"><p>Loading your account…</p></main>;
- if(reset)return <main className="member-shell auth-care"><h1>Reset your password</h1><TaskForm submit={async v=>{await api('/member/reset','POST',{token:reset,password:v.password});location.href='/member'}}><label>New password<input type="password" name="password" minLength="12" maxLength="128" required/></label></TaskForm></main>;
- if(!data)return <main className="member-shell auth-care"><a href="/"><ArrowLeft size={16}/> Back to website</a><Activity className="care-symbol"/><p className="eyebrow">Your coaching space</p><h1>{mode==='login'?'Welcome back.':'Start your journey.'}</h1><div className="care-tabs"><button className={mode==='login'?'active':''} onClick={()=>setMode('login')}>Sign in</button><button className={mode==='register'?'active':''} onClick={()=>setMode('register')}>Create account</button></div><TaskForm key={mode} submit={async v=>{await api('/member/'+mode,'POST',v);await load();if(new URLSearchParams(location.search).get('return')==='physio')location.href='/physiotherapy'}}>{mode==='register'&&<label>Full name<input name="name" autoComplete="name" maxLength="100" required/></label>}<label>Email<input name="email" type="email" autoComplete="email" required/></label><label>Password (at least 12 characters)<input name="password" type="password" autoComplete={mode==='register'?'new-password':'current-password'} minLength="12" maxLength="128" required/></label></TaskForm><p className="muted">Forgot your password? Ask your coach for a private reset link.</p></main>;
- return <main className="member-shell"><header className="member-header"><div><a href="/">← Website</a><p className="eyebrow">Member area</p><h1>Hello, {data.user.name.split(' ')[0]}.</h1></div><button className="ghost-btn" onClick={async()=>{await api('/logout','POST');setData(null)}}><LogOut size={16}/> Sign out</button></header><div className="care-tabs">{['programs','check-ins','messages','appointments','account'].map(t=><button key={t} className={tab===t?'active':''} onClick={()=>{setTab(t);setNotice('')}}>{t}</button>)}</div>{notice&&<p role="status" className="success-care">{notice}</p>}
- {tab==='programs'&&<><h2>Your programs</h2>{data.assignments.length?data.assignments.map(a=><article key={a.id} className="care-card"><p className="eyebrow">{a.program.duration}</p><h3>{a.program.title}</h3><p>{a.program.description}</p><div className="program-content">{a.program.content||'Your coach is preparing your program instructions.'}</div></article>):<div className="empty-care"><p>Your coach hasn’t assigned a program yet.</p><a className="primary-btn" href="/#programs">Browse programs</a></div>}<h2>Program requests</h2>{data.orders.map(o=><div className="care-list-row" key={o.id}><b>{o.program}</b><span>${o.amount} · {o.status}</span></div>)}<p className="muted">Payment status and program access are confirmed by your coach.</p></>}
- {tab==='check-ins'&&<div className="care-columns"><section><h2>Weekly check-in</h2><TaskForm submit={async(v,f)=>{await api('/member/checkins','POST',v);f.reset();await load();setNotice('Check-in sent to your coach.')}}><label>Weight, kg (optional)<input name="weight" type="number" min="20" max="400" step="0.1"/></label><label>Planned sessions this week<input name="planned" type="number" min="1" max="30" required/></label><label>Completed sessions<input name="completed" type="number" min="0" max="30" required/></label><label>How did your week go?<textarea name="notes" maxLength="2000"/></label><p className="muted">Only you and your coach can see these check-ins.</p></TaskForm></section><section><h2>Your history</h2>{data.checkins.length?data.checkins.map(c=><article className="care-card" key={c.id}><b>{new Date(c.createdAt).toLocaleDateString()}</b><p>{c.completed}/{c.planned} sessions{c.weight?' · '+c.weight+' kg':''}</p><p>{c.notes}</p>{c.reply&&<div className="coach-reply"><b>Coach feedback</b><p>{c.reply}</p></div>}</article>):<p>No check-ins yet.</p>}</section></div>}
- {tab==='messages'&&<section><h2>Your conversation</h2><div className="message-feed">{data.messages.map(m=><div key={m.id} className={'message '+m.from}><small>{m.from==='coach'?'Coach':'You'} · {new Date(m.createdAt).toLocaleString()}</small><p>{m.body}</p></div>)}</div><TaskForm submit={async(v,f)=>{await api('/member/messages','POST',v);f.reset();await load()}}><label>Message your coach<textarea name="body" required maxLength="2000"/></label></TaskForm></section>}
- {tab==='appointments'&&<><h2>Physiotherapy appointments</h2><a href="/#physio" className="primary-btn">Request a session <CalendarDays size={16}/></a>{data.bookings.map(b=><article className="care-card" key={b.id}><h3>{b.title}</h3><p>{new Date(b.requestedAt).toLocaleString()} · {b.duration} min · ${b.price}</p><b className="status">{b.status}</b>{['requested','confirmed'].includes(b.status)&&<button className="ghost-btn" onClick={async()=>{try{await api('/member/bookings/'+b.id,'PATCH',{});await load()}catch(e){setNotice(e.message)}}}>Cancel request</button>}</article>)}</>}
- {tab==='account'&&<><h2>Account</h2><p>{data.user.email}</p><TaskForm submit={async v=>{await api('/member/password','POST',v);setNotice('Password updated.')}}><label>Current password<input name="current" type="password" autoComplete="current-password" required/></label><label>New password<input name="password" type="password" minLength="12" maxLength="128" autoComplete="new-password" required/></label></TaskForm></>}
- </main>}
+    if (image.size > 2 * 1024 * 1024 ||
+        !['image/jpeg', 'image/png', 'image/webp'].includes(image.type)) {
+      setError('Choose a JPEG, PNG or WebP under 2 MB');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => setImage(reader.result);
+    reader.onerror = () => setError('Unable to read this image');
+    reader.readAsDataURL(image);
+  }
+
+  return (
+    <TaskForm buttonLabel="Save transformation" submit={values => {
+      if (error) throw new Error(error);
+      return save({
+        ...values,
+        id: item.id,
+        before,
+        after,
+        consent: values.consent === 'on',
+        published: values.published === 'on'
+      });
+    }}>
+      <label>Client display name<input name="name" defaultValue={item.name} required maxLength="100"/></label>
+      <label>Headline<input name="title" defaultValue={item.title} required maxLength="150"/></label>
+      <label>Time period<input name="duration" defaultValue={item.duration} placeholder="For example: 12 weeks"/></label>
+      <label>Client story<textarea name="story" defaultValue={item.story}/></label>
+
+      <div className="care-columns">
+        <label>
+          Before photo
+          <input type="file" accept="image/jpeg,image/png,image/webp"
+            onChange={event => file(event, setBefore)}/>
+          {before && <img className="preview-photo" src={before} alt="Before preview"/>}
+        </label>
+        <label>
+          After photo
+          <input type="file" accept="image/jpeg,image/png,image/webp"
+            onChange={event => file(event, setAfter)}/>
+          {after && <img className="preview-photo" src={after} alt="After preview"/>}
+        </label>
+      </div>
+
+      {error && <p role="alert">{error}</p>}
+
+      <label className="checkbox-care">
+        <input name="consent" type="checkbox" defaultChecked={item.consent}/>
+        I have permission to publish these photos and this story
+      </label>
+      <label className="checkbox-care">
+        <input name="published" type="checkbox" defaultChecked={item.published}/>
+        Publish on the website
+      </label>
+      <button type="button" className="ghost-btn" onClick={close}>Cancel</button>
+    </TaskForm>
+  );
+}
