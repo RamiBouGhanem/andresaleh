@@ -1,542 +1,420 @@
-import React, {useCallback, useEffect, useMemo, useState} from 'react';
-import {
-  Activity, ArrowLeft, ChevronRight, CircleDollarSign,
-  Dumbbell, Eye, LayoutDashboard, LogOut, Menu,
-  MessageSquareMore, Plus, Search, Settings,
-  ShoppingBag, Trash2, TrendingUp, UsersRound, X
-} from 'lucide-react';
-import './admin.css';
-import CareAdmin from './CareAdmin';
+import React, {useEffect, useRef, useState} from 'react';
 import {api, TaskForm, cleanCopy} from './Care';
-import Notifications from './Notifications';
+import {MessageFeed, refreshNotifications} from './Notifications';
 
-const money = value => new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 0
-}).format(value || 0);
 
-const date = value => new Intl.DateTimeFormat('en', {
-  month: 'short',
-  day: 'numeric',
-  year: 'numeric'
-}).format(new Date(value));
-
-const tabs = [
-  ['overview', LayoutDashboard, 'Overview'],
-  ['programs', Dumbbell, 'Programs'],
-  ['orders', ShoppingBag, 'Orders'],
-  ['leads', MessageSquareMore, 'Leads'],
-  ['clients', UsersRound, 'Members'],
-  ['physio', Activity, 'Physiotherapy'],
-  ['shifts', TrendingUp, 'Transformations'],
-  ['settings', Settings, 'Settings']
-];
-
-function Login({done}) {
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  async function submit(event) {
-    event.preventDefault();
-    setError('');
-    setBusy(true);
-
-    try {
-      const values = Object.fromEntries(new FormData(event.currentTarget));
-      await api('/admin/login', 'POST', values);
-      done();
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <main className="admin-login">
-      <a href="/"><ArrowLeft/> Back to website</a>
-      <section>
-        <div className="admin-logo"><Activity/></div>
-        <p className="eyebrow">Coach administration</p>
-        <h1>Run your coaching<br/><em>business</em></h1>
-        <p>Manage programs, clients, leads and sales from one place</p>
-
-        <form onSubmit={submit}>
-          <label>
-            Email
-            <input name="email" type="email" autoComplete="username"
-              placeholder="Coach email" required/>
-          </label>
-          <label>
-            Password
-            <input name="password" type="password"
-              autoComplete="current-password" placeholder="Password" required/>
-          </label>
-          {error && <div role="alert" className="form-error">{error}</div>}
-          <button disabled={busy} className="primary-btn">
-            {busy ? 'Signing in…' : 'Sign in'} <ChevronRight/>
-          </button>
-          <small>Use your coach administrator credentials</small>
-        </form>
-      </section>
-    </main>
-  );
-}
-
-function Editor({program, close, save}) {
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  async function submit(event) {
-    event.preventDefault();
-    setError('');
-    setBusy(true);
-
-    const values = Object.fromEntries(new FormData(event.currentTarget));
-    values.features = values.features.split('\n').map(x => x.trim()).filter(Boolean);
-
-    try {
-      await save(values);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="admin-modal-bg">
-      <form className="admin-modal" onSubmit={submit}>
-        <button type="button" className="admin-close" onClick={close}
-          aria-label="Close program editor"><X/></button>
-
-        <p className="eyebrow">{program ? 'Edit program' : 'New program'}</p>
-        <h2>{program ? 'Update offer' : 'Create an offer'}</h2>
-
-        <div className="form-grid">
-          <label>Program title<input name="title" defaultValue={program?.title} required/></label>
-          <label>Price (USD)<input name="price" type="number" min="1" defaultValue={program?.price} required/></label>
-          <label>Tag<input name="tag" defaultValue={program?.tag || 'NEW'}/></label>
-          <label>
-            Status
-            <select name="status" defaultValue={program?.status || 'draft'}>
-              <option value="draft">Draft</option>
-              <option value="published">Published</option>
-            </select>
-          </label>
-          <label>Duration<input name="duration" defaultValue={program?.duration || '8 weeks'}/></label>
-          <label>Level<input name="level" defaultValue={program?.level || 'All levels'}/></label>
-          <label className="wide">Subtitle<input name="subtitle" defaultValue={program?.subtitle}/></label>
-          <label className="wide">Description<textarea name="description" rows="3" defaultValue={program?.description}/></label>
-          <label className="wide">
-            Features — one per line
-            <textarea name="features" rows="5" defaultValue={program?.features?.join('\n')}/>
-          </label>
-          <label className="wide">
-            Member-only program instructions
-            <textarea name="content" rows="10" defaultValue={program?.content}
-              placeholder="Training schedule, exercise sets and reps, resources and guidance"/>
-          </label>
-        </div>
-
-        {error && <div role="alert">{error}</div>}
-
-        <div className="modal-actions">
-          <button type="button" className="ghost-btn" onClick={close}>Cancel</button>
-          <button disabled={busy} className="primary-btn">
-            {busy ? 'Saving…' : 'Save program'}
-          </button>
-        </div>
-      </form>
-    </div>
-  );
-}
-
-export default function Admin() {
-  const [authenticated, setAuthenticated] = useState(true);
-  const [data, setData] = useState(null);
-  const [tab, setTab] = useState('overview');
-  const [menu, setMenu] = useState(false);
-  const [editor, setEditor] = useState(false);
+export default function CareAdmin({data, load, section, conversation}) {
+  const [selected, setSelected] = useState('');
+  const [notice, setNotice] = useState('');
+  const [editing, setEditing] = useState(null);
   const [query, setQuery] = useState('');
-  const [error, setError] = useState('');
-  const [conversation, setConversation] = useState(null);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetLink, setResetLink] = useState('');
+  const messageSection = useRef(null);
 
-  const load = useCallback(async () => {
-    try {
-      const result = await api('/admin/dashboard');
-      setData(result);
-      setError('');
-      return result;
-    } catch (e) {
-      setError(e.message);
-
-      if (e.status === 401 || e.status === 403) {
-        setAuthenticated(false);
-        setData(null);
-      }
-
-      throw e;
-    }
-  }, []);
+  const member = data.clients.find(client => client.id === selected);
 
   useEffect(() => {
-    if (!authenticated) return;
-
-    let stopped = false;
-    let pending = false;
-
-    async function refresh() {
-      if (stopped || pending || document.hidden) return;
-      pending = true;
-      try {
-        await load();
-      } catch {
-        // Errors are displayed by load
-      } finally {
-        pending = false;
-      }
+    if (section === 'clients' && conversation?.memberId) {
+      setSelected(conversation.memberId);
+      setQuery('');
+      setNotice('');
+      setResetLink('');
     }
+  }, [section, conversation]);
 
-    refresh();
-    const timer = setInterval(refresh, 10000);
+  useEffect(() => {
+    if (!member || conversation?.memberId !== selected) return;
 
-    window.addEventListener('focus', refresh);
-    window.addEventListener('coaching-messages-updated', refresh);
-    document.addEventListener('visibilitychange', refresh);
+    const frame = requestAnimationFrame(() => {
+      messageSection.current?.scrollIntoView({
+        behavior: 'auto',
+        block: 'start'
+      });
+      messageSection.current?.focus({preventScroll: true});
+    });
 
-    return () => {
-      stopped = true;
-      clearInterval(timer);
-      window.removeEventListener('focus', refresh);
-      window.removeEventListener('coaching-messages-updated', refresh);
-      document.removeEventListener('visibilitychange', refresh);
-    };
-  }, [authenticated, load]);
+    return () => cancelAnimationFrame(frame);
+  }, [selected, conversation, member?.id]);
 
-  const lists = useMemo(() => {
-    const search = query.toLowerCase();
+  async function act(action) {
+    try {
+      await action();
+      await load();
+      setNotice('Saved');
+    } catch (e) {
+      setNotice(e.message);
+    }
+  }
 
-    return {
-      orders: (data?.orders || []).filter(item =>
-        `${item.name} ${item.email} ${item.program}`.toLowerCase().includes(search)
-      ),
-      leads: (data?.leads || []).filter(item =>
-        `${item.name} ${item.email} ${item.goal}`.toLowerCase().includes(search)
-      )
-    };
-  }, [data, query]);
-
-  async function save(values) {
-    await api(
-      editor?.id ? `/admin/programs/${editor.id}` : '/admin/programs',
-      editor?.id ? 'PUT' : 'POST',
-      values
-    );
-    setEditor(false);
+  async function submitAction(action) {
+    await action();
     await load();
+    setNotice('Saved');
   }
 
-  async function remove(programId) {
-    if (!window.confirm('Delete this program?')) return;
-
-    try {
-      await api(`/admin/programs/${programId}`, 'DELETE');
-      await load();
-    } catch (e) {
-      setError(e.message);
-    }
+  function chooseMember(memberId) {
+    setSelected(memberId);
+    setNotice('');
+    setResetLink('');
   }
-
-  async function status(type, itemId, value) {
-    try {
-      await api(`/admin/${type}/${itemId}`, 'PATCH', {status: value});
-      await load();
-    } catch (e) {
-      setError(e.message);
-    }
-  }
-
-  function openConversation(memberId) {
-    setTab('clients');
-    setMenu(false);
-    setConversation({memberId, requestId: Date.now()});
-    load().catch(() => {});
-  }
-
-  if (!authenticated) {
-    return <Login done={() => {
-      setData(null);
-      setError('');
-      setAuthenticated(true);
-    }}/>;
-  }
-
-  if (!data) {
-    return (
-      <div className="admin-loading">
-        <Activity/>
-        <p>{error || 'Loading dashboard…'}</p>
-        {error && (
-          <button className="ghost-btn" onClick={() => load().catch(() => {})}>
-            Try again
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  const unread = data.messages.filter(message =>
-    message.from === 'member' && !message.readAt
-  ).length;
 
   return (
-    <div className="admin-shell">
-      <aside className={menu ? 'admin-sidebar open' : 'admin-sidebar'}>
-        <a className="admin-brand" href="/">
-          <Activity/>
-          <span><b>ANDRE SALEH</b>COACHING</span>
-        </a>
+    <section className="admin-card care-admin">
+      <header className="care-admin-heading">
+        <h2>
+          {section === 'clients'
+            ? 'Members & coaching'
+            : section === 'physio'
+              ? 'Physiotherapy appointments'
+              : 'Client transformations'}
+        </h2>
+        <button className="ghost-btn" onClick={() => act(async () => {})}>Refresh</button>
+      </header>
 
-        <nav>
-          {tabs.map(([id, Icon, label]) => (
-            <button
-              key={id}
-              className={tab === id ? 'active' : ''}
-              onClick={() => {
-                setTab(id);
-                setMenu(false);
-              }}
-            >
-              <Icon/>{label}
-              {id === 'leads' && data.stats.leads > 0 && <i>{data.stats.leads}</i>}
-              {id === 'clients' && unread > 0 && <i>{unread}</i>}
-            </button>
-          ))}
-        </nav>
+      {notice && <p role="status" className="success-care">{notice}</p>}
 
-        <div className="admin-user">
-          <div>AS</div>
-          <span><b>Andre Saleh</b>Head coach</span>
-          <button aria-label="Sign out" onClick={async () => {
-            try {
-              await api('/logout', 'POST');
-              setAuthenticated(false);
-              setData(null);
-            } catch (e) {
-              setError(e.message);
-            }
-          }}><LogOut/></button>
-        </div>
-      </aside>
+      {section === 'clients' && <>
+        <label className="care-search">
+          Find a member
+          <input placeholder="Name or email" value={query}
+            onChange={event => setQuery(event.target.value)}/>
+        </label>
 
-      <main className="admin-main">
-        <header className="admin-topbar">
-          <button className="admin-menu" aria-label="Toggle menu"
-            onClick={() => setMenu(!menu)}><Menu/></button>
+        <div className="care-columns">
+          <aside>
+            {data.clients
+              .filter(client =>
+                `${client.name} ${client.email}`.toLowerCase().includes(query.toLowerCase())
+              )
+              .map(client => {
+                const unread = data.messages.filter(message =>
+                  message.memberId === client.id &&
+                  message.from === 'member' &&
+                  !message.readAt
+                ).length;
 
-          <div>
-            <p>{tab}</p>
-            <h1>
-              {tab === 'overview'
-                ? 'Welcome back, Coach'
-                : tabs.find(item => item[0] === tab)?.[2]}
-            </h1>
-          </div>
+                return (
+                  <button
+                    className={`member-pick ${selected === client.id ? 'chosen' : ''}`}
+                    onClick={() => chooseMember(client.id)}
+                    key={client.id}
+                  >
+                    <span className="member-pick-title">
+                      <b>{client.name}</b>
+                      {unread > 0 && <span className="inline-unread">{unread}</span>}
+                    </span>
+                    <small>{client.email}</small>
+                    <span>{client.status}</span>
+                  </button>
+                );
+              })}
 
-          <div className="admin-top-actions">
-            <Notifications role="admin" onOpen={openConversation}/>
-            <a href="/" target="_blank" rel="noopener noreferrer"><Eye/> View website</a>
-            <button className="primary-btn" aria-label="Add program"
-              onClick={() => setEditor({})}><Plus/> Add program</button>
-          </div>
-        </header>
+            {!data.clients.length && <p>Members appear here when they create an account</p>}
+          </aside>
 
-        {error && <div role="alert" className="admin-alert">{error}</div>}
+          {member ? (
+            <section key={member.id}>
+              <h3>{member.name}</h3>
+              <p>{member.email} · Joined {new Date(member.createdAt).toLocaleDateString()}</p>
 
-        {tab === 'overview' && <>
-          <section className="stat-grid">
-            <Stat icon={CircleDollarSign} label="Revenue collected"
-              value={money(data.stats.revenue)} note="From paid orders"/>
-            <Stat icon={UsersRound} label="Active clients"
-              value={data.stats.clients} note="Registered active members"/>
-            <Stat icon={MessageSquareMore} label="Unread messages"
-              value={unread} note="Open the bell to reply"/>
-            <Stat icon={Eye} label="Website views"
-              value={data.stats.views.toLocaleString()} note="Page views recorded"/>
-          </section>
+              <div className="care-actions">
+                <button className="ghost-btn" onClick={() => act(() =>
+                  api(`/admin/members/${member.id}`, 'PATCH', {
+                    status: member.status === 'active' ? 'inactive' : 'active'
+                  })
+                )}>
+                  {member.status === 'active' ? 'Deactivate account' : 'Activate account'}
+                </button>
 
-          <div className="admin-overview-grid">
-            <section className="admin-card">
-              <Head eyebrow="Client health" title="Check-ins at a glance"
-                action={() => setTab('clients')}/>
-              {data.clients.map(client => (
-                <div className="client-row" key={client.id}>
-                  <Avatar name={client.name}/>
-                  <div className="client-name">
-                    <b>{client.name}</b><span>{cleanCopy(client.program)}</span>
-                  </div>
-                  <div className="compliance">
-                    <span>{client.compliance}% compliance</span>
-                    <i><b style={{width: `${client.compliance}%`}}/></i>
-                  </div>
-                  <time>{client.nextCheckIn}</time>
+                <button className="ghost-btn" disabled={resetBusy} onClick={async () => {
+                  setResetBusy(true);
+                  setResetLink('');
+
+                  try {
+                    const result = await api(`/admin/members/${member.id}/reset`, 'POST', {});
+                    setResetLink(location.origin + result.path);
+                    setNotice('Reset link created — valid for 30 minutes');
+                  } catch (e) {
+                    setNotice(e.message);
+                  } finally {
+                    setResetBusy(false);
+                  }
+                }}>
+                  {resetBusy ? 'Creating link…' : 'Create reset link'}
+                </button>
+              </div>
+
+              {resetLink && (
+                <div className="reset-link-box">
+                  <label>
+                    Private reset link
+                    <input readOnly value={resetLink}
+                      onFocus={event => event.target.select()}/>
+                  </label>
+                  <button className="ghost-btn" onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(resetLink);
+                      setNotice('Reset link copied');
+                    } catch {
+                      setNotice('Select the link above and copy it');
+                    }
+                  }}>Copy link</button>
                 </div>
-              ))}
+              )}
+
+              <h3>Assigned programs</h3>
+
+              {data.assignments
+                .filter(assignment => assignment.memberId === member.id)
+                .map(assignment => (
+                  <div key={assignment.id} className="care-list-row">
+                    <span>
+                      {cleanCopy(data.programs.find(program =>
+                        program.id === assignment.programId
+                      )?.title || 'Archived program')}
+                    </span>
+                    <button className="ghost-btn" onClick={() => act(() =>
+                      api(`/admin/assignments/${assignment.id}`, 'DELETE')
+                    )}>Revoke access</button>
+                  </div>
+                ))}
+
+              <TaskForm submit={values => submitAction(() =>
+                api('/admin/assignments', 'POST', {
+                  memberId: member.id,
+                  programId: values.programId
+                })
+              )} buttonLabel="Grant access">
+                <label>
+                  Grant program access
+                  <select name="programId" required>
+                    <option value="">Choose program</option>
+                    {data.programs.map(program =>
+                      <option value={program.id} key={program.id}>{cleanCopy(program.title)}</option>
+                    )}
+                  </select>
+                </label>
+              </TaskForm>
+
+              <h3>Check-ins</h3>
+
+              {data.checkins
+                .filter(checkin => checkin.memberId === member.id)
+                .map(checkin => (
+                  <article className="care-card" key={checkin.id}>
+                    <b>{new Date(checkin.createdAt).toLocaleString()}</b>
+                    <p>
+                      {checkin.completed}/{checkin.planned} completed · {checkin.weight ?? 'No weight entered'}
+                    </p>
+                    <p>{checkin.notes}</p>
+
+                    <TaskForm submit={values => submitAction(() =>
+                      api(`/admin/checkins/${checkin.id}`, 'PATCH', values)
+                    )} buttonLabel="Save feedback">
+                      <label>
+                        Coach feedback
+                        <textarea name="reply" defaultValue={checkin.reply} maxLength="2000"/>
+                      </label>
+                    </TaskForm>
+                  </article>
+                ))}
+
+              <section ref={messageSection} tabIndex={-1} className="conversation-section">
+                <h3>Messages with {member.name}</h3>
+
+                <MessageFeed
+                  role="admin"
+                  memberId={member.id}
+                  messages={data.messages.filter(message => message.memberId === member.id)}
+                />
+
+                <TaskForm buttonLabel="Send message" submit={async (values, form) => {
+                  await api('/admin/messages', 'POST', {
+                    memberId: member.id,
+                    body: values.body
+                  });
+                  form.reset();
+                  await load();
+                  refreshNotifications();
+                }}>
+                  <label>
+                    Reply to member
+                    <textarea name="body" required maxLength="2000" placeholder="Write your message"/>
+                  </label>
+                </TaskForm>
+              </section>
             </section>
-
-            <section className="admin-card">
-              <Head eyebrow="Sales" title="Program performance"/>
-              {data.programs.map((program, index) => (
-                <div className="sales-row" key={program.id}>
-                  <span>{index + 1}</span>
-                  <div>
-                    <b>{cleanCopy(program.title)}</b>
-                    <small>{program.sales || 0} paid orders</small>
-                  </div>
-                  <strong>{money((program.sales || 0) * program.price)}</strong>
-                </div>
-              ))}
-            </section>
-          </div>
-        </>}
-
-        {tab === 'programs' && (
-          <section className="admin-card full">
-            <Head eyebrow="Offers" title="Programs & pricing"/>
-            {data.programs.map(program => (
-              <article className="program-admin-row" key={program.id}>
-                <div className="program-icon"><Dumbbell/></div>
-                <div>
-                  <h3>{cleanCopy(program.title)}</h3>
-                  <p>{program.duration} · {program.level}</p>
-                </div>
-                <span className={`status ${program.status}`}>{program.status}</span>
-                <strong>{money(program.price)}</strong>
-                <small>{program.sales || 0} paid orders</small>
-                <button onClick={() => setEditor(program)}>Edit</button>
-                <button className="danger-icon" aria-label={`Delete ${program.title}`}
-                  onClick={() => remove(program.id)}><Trash2/></button>
-              </article>
-            ))}
-          </section>
-        )}
-
-        {['orders', 'leads'].includes(tab) && (
-          <section className="admin-card full">
-            <div className="table-toolbar">
-              <Head eyebrow="Management" title={tab}/>
-              <label className="search">
-                <Search/>
-                <input value={query} onChange={event => setQuery(event.target.value)}
-                  placeholder={`Search ${tab}`}/>
-              </label>
+          ) : (
+            <div className="empty-care">
+              <h3>Select a member</h3>
+              <p>Review progress, assign content and keep the conversation in one place</p>
             </div>
+          )}
+        </div>
+      </>}
 
-            {tab === 'orders' && (
-              <Table headings={['Customer', 'Program', 'Date', 'Amount', 'Status']}>
-                {lists.orders.map(order => (
-                  <div className="tr" key={order.id}>
-                    <Person item={order}/>
-                    <span>{cleanCopy(order.program)}</span>
-                    <span>{date(order.createdAt)}</span>
-                    <span>{money(order.amount)}</span>
-                    <select className={`status ${order.status}`} value={order.status}
-                      onChange={event => status('orders', order.id, event.target.value)}>
-                      {['pending', 'paid', 'cancelled', 'refunded'].map(value =>
-                        <option key={value}>{value}</option>
-                      )}
-                    </select>
-                  </div>
-                ))}
-              </Table>
-            )}
+      {section === 'physio' && <>
+        <p>Times use your device’s time zone — confirmed appointments cannot overlap</p>
+        {!data.bookings.length && <p>No appointment requests yet</p>}
 
-            {tab === 'leads' && (
-              <Table headings={['Lead', 'Goal', 'Source', 'Date', 'Status']}>
-                {lists.leads.map(lead => (
-                  <div className="tr" key={lead.id}>
-                    <Person item={lead}/>
-                    <span>{lead.goal}</span>
-                    <span>{lead.source}</span>
-                    <span>{date(lead.createdAt)}</span>
-                    <select className={`status ${lead.status}`} value={lead.status}
-                      onChange={event => status('leads', lead.id, event.target.value)}>
-                      {['new', 'contacted', 'qualified', 'converted', 'closed'].map(value =>
-                        <option key={value}>{value}</option>
-                      )}
-                    </select>
-                  </div>
-                ))}
-              </Table>
-            )}
-          </section>
+        {data.bookings.map(booking => (
+          <article className="care-card" key={booking.id}>
+            <h3>{cleanCopy(booking.title)}</h3>
+            <p>
+              {booking.name} · {new Date(booking.requestedAt).toLocaleString()} · {booking.duration} minutes · ${booking.price}
+            </p>
+            <p>{booking.notes}</p>
+            <label>
+              Appointment status
+              <select value={booking.status} onChange={event => act(() =>
+                api(`/admin/bookings/${booking.id}`, 'PATCH', {status: event.target.value})
+              )}>
+                {['requested', 'confirmed', 'completed', 'cancelled'].map(value =>
+                  <option key={value}>{value}</option>
+                )}
+              </select>
+            </label>
+          </article>
+        ))}
+
+        <h3>Session types & pricing</h3>
+        <button className="primary-btn" onClick={() => setEditing({active: true})}>
+          Add session type
+        </button>
+
+        {data.services.map(service => (
+          <div className="care-list-row" key={service.id}>
+            <span>
+              {cleanCopy(service.title)} · {service.duration} min · ${service.price} · {service.active ? 'Visible' : 'Hidden'}
+            </span>
+            <button className="ghost-btn" onClick={() => setEditing(service)}>Edit</button>
+          </div>
+        ))}
+
+        {editing && (
+          <TaskForm key={editing.id || 'new'} buttonLabel="Save session"
+            submit={async values => {
+              await api('/admin/services', 'POST', {
+                ...values,
+                id: editing.id,
+                active: values.active === 'on'
+              });
+              setEditing(null);
+              await load();
+            }}>
+            <label>Session name<input name="title" defaultValue={editing.title} required/></label>
+            <label>Duration, minutes<input name="duration" type="number" min="15" max="180"
+              defaultValue={editing.duration || 60} required/></label>
+            <label>Price, USD<input name="price" type="number" min="0"
+              defaultValue={editing.price || 0} required/></label>
+            <label>Description<textarea name="description" defaultValue={editing.description}/></label>
+            <label className="checkbox-care">
+              <input name="active" type="checkbox" defaultChecked={editing.active}/> Show on website
+            </label>
+            <button type="button" className="ghost-btn" onClick={() => setEditing(null)}>Cancel</button>
+          </TaskForm>
         )}
+      </>}
 
-        {['clients', 'physio', 'shifts'].includes(tab) && (
-          <CareAdmin
-            key={tab}
-            data={data}
-            load={load}
-            section={tab}
-            conversation={conversation}
+      {section === 'shifts' && <>
+        <p>Add client photos and record permission before publishing</p>
+        <button className="primary-btn" onClick={() => setEditing({})}>Add transformation</button>
+
+        {data.transformations.map(item => (
+          <div className="care-list-row" key={item.id}>
+            <span>{item.name} · {cleanCopy(item.title)} · {item.published ? 'Published' : 'Draft'}</span>
+            <button className="ghost-btn" onClick={() => setEditing(item)}>Edit</button>
+            <button className="ghost-btn" onClick={() => {
+              if (window.confirm('Delete this transformation?')) {
+                act(() => api(`/admin/transformations/${item.id}`, 'DELETE'));
+              }
+            }}>Delete</button>
+          </div>
+        ))}
+
+        {editing && (
+          <TransformationEditor
+            key={editing.id || 'new'}
+            item={editing}
+            close={() => setEditing(null)}
+            save={async values => {
+              await api('/admin/transformations', 'POST', values);
+              setEditing(null);
+              await load();
+            }}
           />
         )}
-
-        {tab === 'settings' && (
-          <section className="admin-card full settings-page">
-            <Head eyebrow="Configuration" title="Business settings"/>
-            <div className="settings-grid">
-              <Setting icon={Settings} title="Brand & contact"
-                text="Keep your contact details and social links up to date"/>
-              <Setting icon={CircleDollarSign} title="Payments"
-                text="Arrange payment with the client and update the order status once received"/>
-              <Setting icon={Dumbbell} title="Program delivery"
-                text="Add instructions to a program and assign it from Members"/>
-              <Setting icon={MessageSquareMore} title="Message notifications"
-                text="Use the notification bell to see unread messages and open a conversation"/>
-            </div>
-          </section>
-        )}
-      </main>
-
-      {editor && (
-        <Editor program={editor.id ? editor : null}
-          close={() => setEditor(false)} save={save}/>
-      )}
-    </div>
+      </>}
+    </section>
   );
 }
 
-function Stat({icon: Icon, label, value, note}) {
-  return <article><span><Icon/></span><p>{label}</p>
-    <strong>{value}</strong><small><TrendingUp/>{note}</small></article>;
-}
+function TransformationEditor({item, save, close}) {
+  const [before, setBefore] = useState(item.before || '');
+  const [after, setAfter] = useState(item.after || '');
+  const [error, setError] = useState('');
 
-function Head({eyebrow, title, action}) {
-  return <div className="card-heading"><div>
-    <p className="eyebrow">{eyebrow}</p><h2>{title}</h2>
-  </div>{action && <button onClick={action}>View all <ChevronRight/></button>}</div>;
-}
+  function file(event, setImage) {
+    setError('');
+    const image = event.target.files[0];
+    if (!image) return;
 
-function Avatar({name = ''}) {
-  return <div className="avatar">
-    {name.split(/\s+/).map(value => value[0]).join('').slice(0, 2)}
-  </div>;
-}
+    if (image.size > 2 * 1024 * 1024 ||
+        !['image/jpeg', 'image/png', 'image/webp'].includes(image.type)) {
+      setError('Choose a JPEG, PNG or WebP under 2 MB');
+      return;
+    }
 
-function Person({item}) {
-  return <span><b>{item.name}</b><small>{item.email}</small></span>;
-}
+    const reader = new FileReader();
+    reader.onload = () => setImage(reader.result);
+    reader.onerror = () => setError('Unable to read this image');
+    reader.readAsDataURL(image);
+  }
 
-function Table({headings, children}) {
-  return <div className="data-table">
-    <div className="tr th">{headings.map(value => <span key={value}>{value}</span>)}</div>
-    {children}
-  </div>;
-}
+  return (
+    <TaskForm buttonLabel="Save transformation" submit={values => {
+      if (error) throw new Error(error);
+      return save({
+        ...values,
+        id: item.id,
+        before,
+        after,
+        consent: values.consent === 'on',
+        published: values.published === 'on'
+      });
+    }}>
+      <label>Client display name<input name="name" defaultValue={item.name} required maxLength="100"/></label>
+      <label>Headline<input name="title" defaultValue={item.title} required maxLength="150"/></label>
+      <label>Time period<input name="duration" defaultValue={item.duration} placeholder="For example: 12 weeks"/></label>
+      <label>Client story<textarea name="story" defaultValue={item.story}/></label>
 
-function Setting({icon: Icon, title, text}) {
-  return <article><Icon/><div><h3>{title}</h3><p>{text}</p></div></article>;
+      <div className="care-columns">
+        <label>
+          Before photo
+          <input type="file" accept="image/jpeg,image/png,image/webp"
+            onChange={event => file(event, setBefore)}/>
+          {before && <img className="preview-photo" src={before} alt="Before preview"/>}
+        </label>
+        <label>
+          After photo
+          <input type="file" accept="image/jpeg,image/png,image/webp"
+            onChange={event => file(event, setAfter)}/>
+          {after && <img className="preview-photo" src={after} alt="After preview"/>}
+        </label>
+      </div>
+
+      {error && <p role="alert">{error}</p>}
+
+      <label className="checkbox-care">
+        <input name="consent" type="checkbox" defaultChecked={item.consent}/>
+        I have permission to publish these photos and this story
+      </label>
+      <label className="checkbox-care">
+        <input name="published" type="checkbox" defaultChecked={item.published}/>
+        Publish on the website
+      </label>
+      <button type="button" className="ghost-btn" onClick={close}>Cancel</button>
+    </TaskForm>
+  );
 }
