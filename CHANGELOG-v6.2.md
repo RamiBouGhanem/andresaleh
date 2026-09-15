@@ -25,10 +25,3 @@ What changed and why, on top of the existing v6.1 platform:
 
 No backend, routing, or data-contract changes. `dist/` was removed from this archive since it's a
 build artifact — run `npm install && npm run build` to regenerate it.
-
-## Hotfix
-`useRef` was used in the new `Modal` component but not imported from `react`, which threw a
-`ReferenceError` on mount and crashed the whole app to a blank/black screen. Fixed by adding it to
-the top import. Re-verified by actually mounting the bundle in headless Chromium (not just a
-syntax check) — the page now renders, the bottom sheet opens, the form submits, and the success
-state with confetti shows correctly, with zero uncaught errors.

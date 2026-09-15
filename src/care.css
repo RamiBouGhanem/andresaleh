@@ -23,3 +23,5 @@
 .sample-results{gap:12px}
 @media(max-width:1000px){.horizontal-cards>article{flex-basis:calc((100% - 12px)/2)}}
 @media(max-width:600px){.horizontal-cards{gap:8px}.horizontal-cards>article{flex-basis:94%}.sample-results{gap:8px}.outcome-card{flex-basis:94%}.care-section .care-card>strong{margin-top:auto}.horizontal-cards>.care-card .primary-btn{align-self:stretch;margin-top:14px}}
+.payment-options{display:flex;gap:12px;margin:18px 0;flex-wrap:wrap}.payment-options button{flex:1;min-width:160px}.cash-request-details{margin-top:22px;border-top:1px solid #253349;padding-top:16px}.cash-request-details summary{cursor:pointer;color:#9daabb;font-size:13px}.cash-request-details .checkout-form{margin-top:16px}
+.payment-return{text-align:center;display:flex;flex-direction:column;align-items:center;gap:14px}.payment-return svg.spin{animation:spin 1.2s linear infinite;color:#2678ff;width:34px;height:34px}.payment-return .success-icon{width:60px;height:60px;border-radius:50%;background:#15332b;color:#5ddba0;display:grid;place-items:center}.payment-return .fail-icon{width:60px;height:60px;border-radius:50%;background:#3f1e24;color:#e8959e;display:grid;place-items:center}

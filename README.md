@@ -69,11 +69,38 @@ old sessions. Messages refresh every 30 seconds in the member area; admin has Re
 ### Orders
 
 Members can request programs. Prices are read from the server, not accepted from
-the browser. Payment is arranged manually. Marking an order Paid records your
-confirmation; it does not charge a card or grant program access automatically.
-After receiving payment, assign the program from Members. Revoke access separately
-if a refund or cancellation requires it. Actual revenue metrics derive from orders
-marked Paid; visit counts are page views, not unique-person analytics.
+the browser. Actual revenue metrics derive from orders marked Paid; visit counts
+are page views, not unique-person analytics.
+
+### Online payments (Visa card + Whish)
+
+Members can now pay for a program or a physiotherapy session with a card, the
+same way as paying on Netflix or ChatGPT: they're redirected to the provider's
+own secure payment page (Stripe for Visa/Mastercard, Whish Pay for Whish/local
+cards), never a form on this site, and this app never stores or sees a card
+number. Once the provider confirms the charge — via webhook, and re-checked
+directly with the provider before anything is granted — the member instantly
+gets the program in their dashboard, or their session is booked, and the coach
+gets an in-app notification (the bell icon in the admin topbar) naming the
+client and what they were granted.
+
+This is implemented in `backend/payments.js` as small adapters, one per
+provider, each returning a hosted checkout URL and a way to check payment
+status. To turn a provider on, add its keys in `.env` (see `.env.example`):
+
+- **Stripe** (Visa/Mastercard): create an account at stripe.com, add
+  `STRIPE_SECRET_KEY`, and point a webhook at `/api/webhooks/stripe`.
+- **Whish**: you'll need to sign up as a Whish merchant first. The endpoint
+  paths in `backend/payments.js` are placeholders based on Whish's public
+  description of their Collect service — confirm the exact paths and field
+  names against the technical specification Whish gives you, and update the
+  two `fetch()` calls in that file. Until `WHISH_CHANNEL`/`WHISH_SECRET` are
+  set, the "Pay with Whish" button stays hidden automatically.
+
+Coaches can keep granting access manually for cash or bank transfer, exactly
+as before, from Members → Grant program access — nothing about that changed.
+Marking an order Paid from the Orders tab now also grants access automatically
+(assigns the program, or books the session), matching what the card flow does.
 
 ### Physiotherapy
 
