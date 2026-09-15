@@ -8,7 +8,6 @@ export async function api(path,method='GET',body){const r=await fetch('/api'+pat
 // so the /payment/return page can show something useful even after a
 // full page redirect round-trip.
 export async function startCheckout({kind,itemId,provider,phone,notes,requestedAt}){const order=await api('/checkout','POST',{kind,itemId,provider,phone,notes,requestedAt});sessionStorage.setItem('coach_checkout_return',kind==='service'?'/physiotherapy':'/member');location.href=order.checkoutUrl}
-export function PaymentOptions({onPay,disabled}){return <div className="payment-options"><button type="button" className="primary-btn" disabled={disabled} onClick={()=>onPay('stripe')}>Pay with Visa card</button><button type="button" className="ghost-btn" disabled={disabled} onClick={()=>onPay('whish')}>Pay with Whish</button></div>}
 export const values=e=>Object.fromEntries(new FormData(e.currentTarget));
 export function TaskForm({children,submit,className=''}){const[busy,setBusy]=useState(false),[error,setError]=useState('');return <form className={'care-form '+className} onSubmit={async e=>{e.preventDefault();const form=e.currentTarget,v=values(e);setBusy(true);setError('');try{await submit(v,form)}catch(e){setError(e.message)}finally{setBusy(false)}}}>{children}{error&&<p role="alert" className="form-error">{error}</p>}<button disabled={busy} className="primary-btn">{busy?'Saving…':'Save / submit'} <ArrowRight size={16}/></button></form>}
 export function Carousel({children,label}) {

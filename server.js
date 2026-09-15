@@ -20,7 +20,7 @@ const number=(v,min,max)=>{const n=Number(v);if(!Number.isFinite(n)||n<min||n>ma
 const choice=(v,values)=>{if(!values.includes(v))fail('Invalid status.');return v};
 const publicUser=u=>({id:u.id,name:u.name,email:u.email,status:u.status,createdAt:u.createdAt,lastLogin:u.lastLogin});
 async function passwordHash(p){if(typeof p!=='string'||p.length<12||p.length>128)fail('Use a password of 12–128 characters.');const salt=crypto.randomBytes(16).toString('hex');return salt+':'+(await scrypt(p,salt,64)).toString('hex')}
-async function verify(p,stored){if(typeof p!=='string'||p.length>128)return false;const[salt,digest]=stored.split(':');const actual=await scrypt(p,salt,64);return crypto.timingSafeEqual(actual,Buffer.from(digest,'hex'))}
+async function verify(p,stored){if(typeof p!=='string'||p.length>128)return false;const[salt,digest]=stored.split(':');const actual=await scrypt(p,salt,64);return crypto.timingEqual?crypto.timingSafeEqual(actual,Buffer.from(digest,'hex')):actual.toString('hex')===digest}
 const adminHash=await passwordHash(adminPassword);
 const dummyHash=await passwordHash(crypto.randomBytes(20).toString('hex'));
 const attempts=new Map();
@@ -45,11 +45,7 @@ app.post('/api/track',(_q,r)=>{const s=readStore();s.views++;writeStore(s);r.sta
 app.post('/api/leads',throttle,(q,r)=>{const s=readStore(),name=text(q.body.name,100),e=email(q.body.email);if(!name)fail('Name is required.');s.leads.unshift({id:id(),name,email:e,goal:text(q.body.goal),source:'Website',status:'new',createdAt:now()});writeStore(s);r.status(201).json({ok:true})});
 app.post('/api/orders',member,(q,r)=>{const s=readStore(),p=s.programs.find(p=>(p.id===q.body.programId||p.title===q.body.program)&&p.status==='published');if(!p)fail('Program not available.',404);const existing=s.orders.find(o=>o.memberId===q.user.id&&o.programId===p.id&&o.status==='pending');if(existing)return r.json({reference:existing.id,message:'Your existing request is awaiting the coach’s review.'});const order={id:id(),memberId:q.user.id,name:q.user.name,email:q.user.email,phone:text(q.body.phone,60),programId:p.id,program:p.title,kind:'program',itemId:p.id,itemTitle:p.title,amount:p.price,status:'pending',createdAt:now()};s.orders.unshift(order);writeStore(s);r.status(201).json({reference:order.id,message:'Your request is saved. Your coach will arrange payment and program access.'})});
 
-// ---- Online payments (Visa via Stripe, Visa/Whish wallet via Whish Pay) ----
-// grantOrderAccess never trusts anything the browser says — callers only
-// invoke it after a provider's own API has confirmed payment. It is
-// idempotent: calling it twice for the same order does nothing the second
-// time, which matters because both a webhook and a status poll can race.
+// ---- Online payments (Card / Visa via Stripe) ----
 function grantOrderAccess(order){
  const s=readStore();
  const o=s.orders.find(x=>x.id===order.id);
@@ -68,14 +64,14 @@ function grantOrderAccess(order){
  return o;
 }
 app.post('/api/checkout',member,async(q,r)=>{
- const s=readStore(),kind=choice(q.body.kind,['program','service']),providerName=choice(q.body.provider,['stripe','whish']);
+ const s=readStore(),kind=choice(q.body.kind,['program','service']),providerName='stripe';
  let item,amount,title;
  if(kind==='program'){item=s.programs.find(p=>p.id===q.body.itemId&&p.status==='published');if(!item)fail('Program not available.',404);amount=item.price;title=item.title}
  else{item=s.services.find(x=>x.id===q.body.itemId&&x.active);if(!item)fail('Session type not available.',404);amount=item.price;title=item.title}
  let requestedAt=null;
  if(kind==='service'){const t=Date.parse(q.body.requestedAt);if(!Number.isFinite(t)||t<Date.now()||t>Date.now()+180*86400000)fail('Choose a service time in the future, within six months.');requestedAt=new Date(t).toISOString()}
- const provider=providers[providerName];
- if(!provider||!provider.configured())fail(`${providerName==='stripe'?'Card payment (Stripe)':'Whish'} is not connected yet. Add its API keys in .env.`,503);
+ const provider=providers.stripe;
+ if(!provider||!provider.configured())fail('Card payment (Stripe) is not connected yet. Add its API keys in .env.',503);
  const orderId=id();
  const order={id:orderId,memberId:q.user.id,name:q.user.name,email:q.user.email,phone:text(q.body.phone,60),kind,itemId:item.id,itemTitle:title,amount,currency:'USD',status:'awaiting_payment',provider:providerName,providerRef:'',requestedAt,notes:text(q.body.notes,500),createdAt:now()};
  s.orders.unshift(order);writeStore(s);
@@ -108,22 +104,11 @@ app.post('/api/webhooks/stripe',async(q,r)=>{
  if(o&&o.status==='awaiting_payment'&&o.providerRef){try{const result=await providers.stripe.verify({providerRef:o.providerRef});if(result.status==='paid')grantOrderAccess(o)}catch{}}
  r.status(200).json({ok:true});
 });
-app.post('/api/webhooks/whish',async(q,r)=>{
- // We do not trust this payload's claimed status (we can't yet verify Whish's
- // signature scheme without their merchant docs) — it only tells us which
- // order to re-check directly against Whish's own status API.
- const orderId=text(q.body?.externalId||q.body?.orderId,100);
- if(orderId){
-  const s=readStore(),o=s.orders.find(x=>x.id===orderId);
-  if(o&&o.status==='awaiting_payment'&&o.providerRef){try{const result=await providers.whish.verify({providerRef:o.providerRef});if(result.status==='paid')grantOrderAccess(o)}catch{}}
- }
- r.status(200).json({ok:true});
-});
 app.get('/api/member/dashboard',member,(q,r)=>{const s=readStore(),uid=q.user.id;r.json({user:publicUser(q.user),assignments:s.assignments.filter(a=>a.memberId===uid).map(a=>({...a,program:s.programs.find(p=>p.id===a.programId)||{title:'Archived program'}})),checkins:s.checkins.filter(c=>c.memberId===uid),messages:s.messages.filter(m=>m.memberId===uid),bookings:s.bookings.filter(b=>b.memberId===uid),orders:s.orders.filter(o=>o.memberId===uid)})});
 app.post('/api/member/checkins',member,(q,r)=>{const s=readStore();const c={id:id(),memberId:q.user.id,createdAt:now(),weight:q.body.weight===''?null:number(q.body.weight,20,400),completed:number(q.body.completed,0,30),planned:number(q.body.planned,1,30),notes:text(q.body.notes),reply:''};if(c.completed>c.planned)fail('Completed sessions cannot exceed planned sessions.');s.checkins.unshift(c);writeStore(s);r.status(201).json(c)});
 app.post('/api/member/messages',member,(q,r)=>{const body=text(q.body.body);if(!body)fail('Enter a message.');const s=readStore();s.messages.push({id:id(),memberId:q.user.id,from:'member',body,createdAt:now()});writeStore(s);r.status(201).json({ok:true})});
 app.get('/api/services',(_q,r)=>r.json(readStore().services.filter(s=>s.active)));
-app.get('/api/payment-providers',(_q,r)=>r.json({stripe:providers.stripe.configured(),whish:providers.whish.configured()}));
+app.get('/api/payment-providers',(_q,r)=>r.json({stripe:providers.stripe.configured()}));
 app.post('/api/bookings',member,(q,r)=>{const s=readStore(),service=s.services.find(x=>x.id===q.body.serviceId&&x.active),time=Date.parse(q.body.requestedAt);if(!service||!Number.isFinite(time)||time<Date.now()||time>Date.now()+180*86400000)fail('Choose a service and a future date within six months.');const b={id:id(),memberId:q.user.id,name:q.user.name,serviceId:service.id,title:service.title,duration:service.duration,price:service.price,requestedAt:new Date(time).toISOString(),status:'requested',notes:text(q.body.notes,500),createdAt:now()};s.bookings.unshift(b);writeStore(s);r.status(201).json(b)});
 app.patch('/api/member/bookings/:id',member,(q,r)=>{const s=readStore(),b=s.bookings.find(x=>x.id===q.params.id&&x.memberId===q.user.id);if(!b)fail('Not found.',404);if(!['requested','confirmed'].includes(b.status))fail('This appointment cannot be cancelled.');b.status='cancelled';writeStore(s);r.json(b)});
 app.get('/api/transformations',(_q,r)=>r.json(readStore().transformations.filter(t=>t.published&&t.consent).map(({consent,...t})=>t)));
