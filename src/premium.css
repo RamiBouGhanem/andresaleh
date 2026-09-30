@@ -407,3 +407,42 @@
 .transformation-popup .transformation-popup-story p{margin:0;color:#52657a;font-size:13px;line-height:1.85;white-space:pre-line;overflow-wrap:anywhere}
 @media(max-width:600px){.transformation-popup-content{padding:26px 20px}.site-shell .hero-proof b{font-size:20px}.site-shell .hero-proof span{max-width:150px;line-height:1.45}}
 @media(prefers-reduced-motion:reduce){.site-shell .transformation-message-button{transition:none}}
+
+.message-options {
+  position: relative;
+  display: inline-block;
+}
+
+.message-options summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.message-options summary::-webkit-details-marker {
+  display: none;
+}
+
+.message-options__menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 100;
+  min-width: 240px;
+  padding: 8px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+}
+
+.message-options__menu a {
+  display: block;
+  padding: 10px 12px;
+  color: #222;
+  text-decoration: none;
+  border-radius: 8px;
+}
+
+.message-options__menu a:hover {
+  background: #f3f4f6;
+}
