@@ -37,7 +37,7 @@ export default function PaymentReturn(){
 
  return <main className="member-shell auth-care payment-return">
   {status==='checking'&&<><Loader className="spin"/><h1>Confirming your payment…</h1><p>Please don’t close this page. This can take a few seconds.</p></>}
-  {status==='paid'&&<><div className="success-icon"><Check size={28}/></div><h1>Payment confirmed.</h1><p>{detail?.itemTitle?`Access to ${detail.itemTitle} is unlocked.`:'Access has been unlocked.'} Your coach has been notified.</p><a className="primary-btn" href={back}>Continue <ArrowRight size={16}/></a></>}
+  {status==='paid'&&<><div className="success-icon"><Check size={28}/></div><h1>Payment confirmed.</h1><p>{detail?.kind==='service'?`Your ${detail.itemTitle||'session'} is paid — your coach will confirm the appointment time`:detail?.itemTitle?`Access to ${detail.itemTitle} is unlocked`:'Access has been unlocked'} Your coach has been notified.</p><a className="primary-btn" href={back}>Continue <ArrowRight size={16}/></a></>}
   {status==='failed'&&<><div className="fail-icon"><X size={28}/></div><h1>Payment didn’t go through.</h1><p>No charge was completed. You can try again or choose a different payment method.</p><a className="primary-btn" href={back}>Back <ArrowRight size={16}/></a></>}
   {status==='cancelled'&&<><h1>Payment cancelled.</h1><p>You closed the payment page before finishing. Nothing was charged.</p><a className="primary-btn" href={back}>Back <ArrowRight size={16}/></a></>}
   {status==='timeout'&&<><h1>Still confirming…</h1><p>This is taking longer than usual. If your card was charged, it will appear shortly — check your member area, or contact your coach with your reference.</p><a className="primary-btn" href={back}>Back <ArrowRight size={16}/></a></>}

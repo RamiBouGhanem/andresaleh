@@ -8,7 +8,7 @@
     "build": "vite build",
     "start": "node --experimental-sqlite server.js",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "node --experimental-sqlite tests/integration.mjs",
+    "test": "node tests/payments.mjs && node --experimental-sqlite tests/pricing-migration.mjs && node --experimental-sqlite tests/integration.mjs",
     "backup": "node --experimental-sqlite scripts/backup.mjs"
   },
   "dependencies": {

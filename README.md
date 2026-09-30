@@ -72,35 +72,30 @@ Members can request programs. Prices are read from the server, not accepted from
 the browser. Actual revenue metrics derive from orders marked Paid; visit counts
 are page views, not unique-person analytics.
 
-### Online payments (Visa card + Whish)
+### Online payments (Visa / card) and cash
 
-Members can now pay for a program or a physiotherapy session with a card, the
-same way as paying on Netflix or ChatGPT: they're redirected to the provider's
-own secure payment page (Stripe for Visa/Mastercard, Whish Pay for Whish/local
-cards), never a form on this site, and this app never stores or sees a card
-number. Once the provider confirms the charge — via webhook, and re-checked
-directly with the provider before anything is granted — the member instantly
-gets the program in their dashboard, or their session is booked, and the coach
-gets an in-app notification (the bell icon in the admin topbar) naming the
-client and what they were granted.
+Both programs and post-rehab sessions offer two payment paths: hosted card checkout and a cash request to the coach. Card numbers never pass through this application. A program unlocks only after the server verifies payment with the provider. A paid session creates a request; the coach confirms its appointment time separately.
 
-This is implemented in `backend/payments.js` as small adapters, one per
-provider, each returning a hosted checkout URL and a way to check payment
-status. To turn a provider on, add its keys in `.env` (see `.env.example`):
+The implemented card processor is Stripe. This package is not connected to a live merchant account and contains no payment credentials. Card availability is determined by the backend configuration, not a frontend toggle.
 
-- **Stripe** (Visa/Mastercard): create an account at stripe.com, add
-  `STRIPE_SECRET_KEY`, and point a webhook at `/api/webhooks/stripe`.
-- **Whish**: you'll need to sign up as a Whish merchant first. The endpoint
-  paths in `backend/payments.js` are placeholders based on Whish's public
-  description of their Collect service — confirm the exact paths and field
-  names against the technical specification Whish gives you, and update the
-  two `fetch()` calls in that file. Until `WHISH_CHANNEL`/`WHISH_SECRET` are
-  set, the "Pay with Whish" button stays hidden automatically.
+To connect card payments:
 
-Coaches can keep granting access manually for cash or bank transfer, exactly
-as before, from Members → Grant program access — nothing about that changed.
-Marking an order Paid from the Orders tab now also grants access automatically
-(assigns the program, or books the session), matching what the card flow does.
+1. Use the coach's approved Stripe merchant account and begin in test mode
+2. Set `STRIPE_SECRET_KEY` in the hosting environment — never in frontend code
+3. Set `APP_ORIGIN` to the site's public HTTPS origin
+4. Add `https://YOUR_DOMAIN/api/webhooks/stripe` as a Stripe webhook endpoint for `checkout.session.completed`, `checkout.session.async_payment_succeeded` and `checkout.session.async_payment_failed`
+5. Set the endpoint signing secret as `STRIPE_WEBHOOK_SECRET`, then restart/redeploy
+6. Test a successful and cancelled checkout and confirm the order history and access before switching to live credentials
+
+Official setup references: https://docs.stripe.com/payments/checkout/quickstarts and https://docs.stripe.com/webhooks
+
+Cash requests are tied to the signed-in member and priced from the server catalog. They remain pending until an authenticated coach confirms receipt in Admin → Orders. Online orders cannot be manually marked paid. The monitor records payment attempts, verification and access delivery.
+
+The customer interface presents one card path. The currently implemented processor is Stripe; a different merchant gateway requires its official API contract and a verified adapter. There is no separate Whish customer option or simulated payment success.
+
+### Transformation stories
+
+The three demo transformation cards include emotional example quotes and stories in a white and blue popup. A message icon on each photo opens it; Escape, the close button or the backdrop closes it. Each is explicitly labeled as an example, not client feedback. Replace these with the clients' own approved words using Admin → Transformations. Publishing a real transformation requires feedback, photos and recorded consent.
 
 ### Physiotherapy
 
@@ -217,3 +212,17 @@ The archive includes a production build in dist/. Run npm install and npm start 
 
 ## v6.1.0 compact mobile browsing
 Homepage headings are compact on mobile. Swipe dots and the movement cue remain; mobile arrow buttons are hidden. The physiotherapy photo opens /physiotherapy, where sessions can be requested and rehabilitation programs discussed. Successful member sign-in returns physiotherapy visitors to that page. The floating contact button now contains WhatsApp only; Instagram remains in the coach section and footer. The experience image uses the included coaching-action photo.
+
+## Weekly support and client feedback
+Template programs include a weekly coach meeting rather than coached sessions for every workout. Set the total eight-week USD prices in Programs before accepting purchases; unset prices show as pending and payment actions stay disabled.
+
+Post-rehab sessions use the same verified online payment or pending cash request flow. After payment, a session request is created and the coach confirms the appointment time separately. Cash session requests appear in Orders with the preferred time and note.
+
+Transformation cards show a short client quote and an optional expandable story. The admin editor stores both, and new publication requires client feedback, photos and recorded permission. Use the client’s own approved words.
+
+## Temporary pricing and payment monitoring
+Standard eight-week programs currently cost USD 120; Prenatal Home costs USD 140. These are temporary owner-approved setup values, not market estimates. Change them from Admin → Programs. A one-time upgrade fills zero prices in the existing catalog and preserves nonzero prices and existing order totals.
+
+Admin → Orders shows collected totals, pending cash and online payments, status/method filters, order and provider references, and a timestamped payment timeline. The page refreshes every 15 seconds. Pending online orders can be checked against the payment provider; this action cannot override an unverified payment. Cash confirmation records the coach action before fulfillment. Checkout creation, verification, failure, cancellation and delivery are recorded for new transactions. Historical orders remain available without invented earlier events.
+
+Visa/card checkout requires Stripe credentials and the signed webhook endpoint. A different card gateway requires its verified merchant integration. No real payment is simulated by this package.

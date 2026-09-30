@@ -21,6 +21,7 @@ try{
  const profile=(await a('/member/dashboard')).data.user;
  let program=(await coach('/admin/programs','POST',{title:'Private plan',price:150,status:'published',features:['Strength'],content:'PRIVATE EXERCISE PLAN'})).data;
  assert.equal((await guest('/programs')).data.some(p=>p.content),false);
+ const catalog=(await guest('/programs')).data;assert.equal(catalog.find(p=>p.id==='muscle-building-gym').price,120);assert.equal(catalog.find(p=>p.id==='prenatal-home').price,140);
  assert.equal((await a('/member/dashboard')).data.assignments.length,0);
  assert.equal((await coach('/admin/assignments','POST',{memberId:profile.id,programId:program.id})).status,200);
  assert.equal((await a('/member/dashboard')).data.assignments[0].program.content,'PRIVATE EXERCISE PLAN');
@@ -32,19 +33,29 @@ try{
  assert.equal((await a('/member/dashboard')).data.checkins[0].reply,'Good consistency');
  await a('/member/messages','POST',{body:'Hello coach'});await coach('/admin/messages','POST',{memberId:profile.id,body:'Welcome Alice'});
  assert.equal((await a('/member/dashboard')).data.messages.length,2);assert.equal((await b('/member/dashboard')).data.messages.length,0);
- assert.equal((await a('/orders','POST',{programId:program.id,amount:1})).status,201);
- assert.equal((await a('/member/dashboard')).data.orders[0].amount,150);
+ const cashRequest=await b('/orders','POST',{programId:program.id,amount:1,program:'Tampered title'});assert.equal(cashRequest.status,201);assert.equal(cashRequest.data.status,'cash_pending');assert.equal((await b('/member/dashboard')).data.orders[0].amount,150);assert.equal((await b('/member/dashboard')).data.assignments.length,0);assert.equal((await b('/orders','POST',{programId:program.id})).data.reference,cashRequest.data.reference);assert.equal((await coach('/admin/orders/'+cashRequest.data.reference,'PATCH',{status:'paid'})).status,400);assert.equal((await coach('/admin/orders/'+cashRequest.data.reference,'PATCH',{confirmCashReceived:true})).status,200);assert.equal((await b('/member/dashboard')).data.assignments.length,1);
+ const cashAudit=(await coach('/admin/dashboard')).data.orders.find(o=>o.id===cashRequest.data.reference);assert.deepEqual(cashAudit.events.map(e=>e.type),['cash_requested','cash_confirmed','fulfilled']);assert.ok(cashAudit.fulfilledAt);assert.equal((await a('/admin/orders/'+cashRequest.data.reference+'/verify','POST',{})).status,403);
+
+ const whishProgram=(await coach('/admin/programs','POST',{title:'Whish provider check',price:60,status:'published'})).data;assert.equal((await b('/checkout','POST',{kind:'program',itemId:whishProgram.id,provider:'whish'})).status,503);assert.equal((await b('/checkout','POST',{kind:'program',itemId:whishProgram.id,provider:'stripe'})).status,503);assert.equal((await guest('/payment-providers')).data.whish.enabled,false);
+ const cancelled=await b('/orders','POST',{programId:whishProgram.id});assert.equal(cancelled.status,201);await coach('/admin/orders/'+cancelled.data.reference,'PATCH',{status:'cancelled'});assert.equal((await coach('/admin/dashboard')).data.orders.find(o=>o.id===cancelled.data.reference).events.at(-1).type,'cancelled');
  const time=new Date(Date.now()+86400000).toISOString();
  const ba=(await a('/bookings','POST',{serviceId:'assessment',requestedAt:time})).data;
  const bb=(await b('/bookings','POST',{serviceId:'followup',requestedAt:time})).data;
  assert.equal((await b('/member/bookings/'+ba.id,'PATCH',{})).status,404);
  assert.equal((await coach('/admin/bookings/'+ba.id,'PATCH',{status:'confirmed'})).status,200);
  assert.equal((await coach('/admin/bookings/'+bb.id,'PATCH',{status:'confirmed'})).status,409);
+ const cashTime=new Date(Date.now()+2*86400000).toISOString();
+ const sessionCash=await b('/orders','POST',{kind:'service',itemId:'assessment',requestedAt:cashTime,amount:1});assert.equal(sessionCash.status,201);
+ assert.equal((await b('/member/dashboard')).data.bookings.some(x=>x.requestedAt===cashTime),false);
+ assert.equal((await coach('/admin/orders/'+sessionCash.data.reference,'PATCH',{confirmCashReceived:true})).status,200);
+ assert.equal((await b('/member/dashboard')).data.bookings.filter(x=>x.orderId===sessionCash.data.reference).length,1);
+ assert.equal((await coach('/admin/orders/'+sessionCash.data.reference,'PATCH',{confirmCashReceived:true})).status,409);
+
  const photo='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aK3cAAAAASUVORK5CYII=';
- const t={name:'Consenting client',title:'Test result',before:photo,after:photo,consent:false,published:true};
+ const t={name:'Consenting client',title:'Test result',feedback:'Test client feedback',story:'Test story',before:photo,after:photo,consent:false,published:true};
  assert.equal((await coach('/admin/transformations','POST',t)).status,400);
  assert.equal((await coach('/admin/transformations','POST',{...t,consent:true})).status,200);
- assert.equal((await guest('/transformations')).data.length,1);
+ assert.equal((await guest('/transformations')).data.length,1);assert.equal((await guest('/transformations')).data[0].feedback,'Test client feedback');
  await stop();await start();
  assert.equal((await a('/member/dashboard')).data.checkins.length,1);
  assert.equal((await coach('/admin/dashboard')).data.clients.length,2);
@@ -56,5 +67,5 @@ try{
  await coach('/admin/members/'+profile.id,'PATCH',{status:'inactive'});assert.equal((await a('/member/dashboard')).status,401);
  assert.equal((await a('/member/login','POST',{email:'alice@example.com',password:'ChangedPassword123!'})).status,403);
  assert.equal((await fetch(base+'/api/logout',{method:'POST',headers:{Origin:'https://evil.example'}})).status,403);
- console.log('PASS: registration, login, duplicate email, role enforcement, private program access, check-ins, messages, server-side prices, booking conflicts, image publishing consent, restart persistence, one-use password reset, deactivation and origin checks.');
+ console.log('PASS: registration, login, duplicate email, role enforcement, private program access, check-ins, messages, server-side prices, cash approval gating, payment-provider fail-closed behavior, booking conflicts, image publishing consent, restart persistence, one-use password reset, deactivation and origin checks.');
 }finally{await stop();rmSync(dir,{recursive:true,force:true})}

@@ -25,6 +25,7 @@ const origin = () => (process.env.APP_ORIGIN || 'http://127.0.0.1:5173').replace
 // dashboard once you add the endpoint https://yourdomain/api/webhooks/stripe).
 const stripe = {
   configured: () => Boolean(process.env.STRIPE_SECRET_KEY),
+  checkoutHost: host => host === 'checkout.stripe.com',
 
   async createCheckout({ orderId, amount, currency, description, customer }) {
     const body = new URLSearchParams({
@@ -52,13 +53,18 @@ const stripe = {
     return { checkoutUrl: data.url, providerRef: data.id };
   },
 
-  async verify({ providerRef }) {
+  async verify({ providerRef, order }) {
+    if (!providerRef || !/^cs_(test|live)_[A-Za-z0-9]+$/.test(providerRef)) return { status: 'pending' };
     const r = await fetch(`https://api.stripe.com/v1/checkout/sessions/${providerRef}`, {
       headers: { Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}` },
     });
     if (!r.ok) return { status: 'pending' };
     const data = await r.json();
-    if (data.payment_status === 'paid') return { status: 'paid' };
+    const amountMatches = Number(data.amount_total) === Math.round(Number(order?.amount) * 100);
+    const currencyMatches = String(data.currency).toLowerCase() === String(order?.currency || 'USD').toLowerCase();
+    const orderMatches = data.client_reference_id === order?.id && data.metadata?.orderId === order?.id;
+    if (data.payment_status === 'paid' && data.status === 'complete' && data.mode === 'payment' && amountMatches && currencyMatches && orderMatches) return { status: 'paid' };
+    if (data.payment_status === 'paid') return { status: 'pending', reason: 'Payment details do not match this order — access remains locked' };
     if (data.status === 'expired') return { status: 'failed' };
     return { status: 'pending' };
   },
@@ -67,82 +73,27 @@ const stripe = {
   // HMAC-SHA256(webhookSecret, `${timestamp}.${rawBody}`) must match v1.
   verifyWebhook(rawBody, signatureHeader) {
     if (!process.env.STRIPE_WEBHOOK_SECRET || !signatureHeader) return null;
-    const parts = Object.fromEntries(signatureHeader.split(',').map(p => p.split('=')));
-    if (!parts.t || !parts.v1) return null;
+    const parts = signatureHeader.split(',').reduce((all, p) => {const [k,v]=p.split('=');(all[k]??=[]).push(v);return all},{});
+    const timestamp=Number(parts.t?.[0]), candidates=parts.v1||[];
+    if (!Number.isFinite(timestamp) || Math.abs(Date.now()/1000-timestamp)>300 || !candidates.length) return null;
     const expected = crypto.createHmac('sha256', process.env.STRIPE_WEBHOOK_SECRET)
-      .update(`${parts.t}.${rawBody}`).digest('hex');
-    const ok = expected.length === parts.v1.length &&
-      crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(parts.v1));
+      .update(`${timestamp}.${rawBody}`).digest();
+    const ok = candidates.some(value=>{if(!/^[a-f\d]{64}$/i.test(value))return false;const actual=Buffer.from(value,'hex');return actual.length===expected.length&&crypto.timingSafeEqual(expected,actual)});
     if (!ok) return null;
     try {
       const event = JSON.parse(rawBody);
-      return event?.data?.object?.metadata?.orderId || event?.data?.object?.client_reference_id || null;
+      if(!['checkout.session.completed','checkout.session.async_payment_succeeded','checkout.session.async_payment_failed'].includes(event?.type))return null;
+      return {orderId:event?.data?.object?.metadata?.orderId||event?.data?.object?.client_reference_id||null,type:event.type};
     } catch { return null; }
   },
 };
 
 // ============================== WHISH =======================================
-// Whish Pay's merchant "Collect" web service returns a hosted URL where the
-// client fills in card / Whish wallet details, then exposes a status
-// endpoint you poll with your channel + secret.
-//
-// *** You don't have Whish merchant credentials yet. ***
-// The exact endpoint paths and field names below are our best-documented
-// placeholder based on Whish's public "Collect" service description, and
-// MUST be confirmed against the technical spec Whish gives you when you
-// sign up as a merchant (ask for their "Web Service Technical
-// Specification" PDF). Until WHISH_SECRET is set, this adapter simply
-// reports itself as not configured, so the payment option stays hidden
-// rather than silently failing. Update the two fetch() calls below with
-// the real paths once you have them — everything else (order creation,
-// auto-grant, notifications) already works against whatever this adapter
-// returns.
+// Fail closed until the merchant API contract is implemented and verified.
+// Public-facing material is not a substitute for authenticated API specs.
 const whish = {
-  configured: () => Boolean(process.env.WHISH_CHANNEL && process.env.WHISH_SECRET),
-
-  async createCheckout({ orderId, amount, currency, description, customer }) {
-    const base = process.env.WHISH_BASE_URL || 'https://whish.money/itmpapi'; // TODO confirm with Whish
-    const r = await fetch(`${base}/payment/collect`, { // TODO confirm exact path
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        channel: process.env.WHISH_CHANNEL,
-        secret: process.env.WHISH_SECRET,
-      },
-      body: JSON.stringify({
-        amount,
-        currency, // 'USD' or 'LBP'
-        invoice: description,
-        externalId: orderId,
-        successCallbackUrl: `${origin()}/payment/return?provider=whish&order=${orderId}`,
-        failureCallbackUrl: `${origin()}/payment/return?provider=whish&order=${orderId}&cancelled=1`,
-        successRedirectUrl: `${origin()}/payment/return?provider=whish&order=${orderId}`,
-        failureRedirectUrl: `${origin()}/payment/return?provider=whish&order=${orderId}&cancelled=1`,
-        customerName: customer?.name || '',
-      }),
-    });
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok || !data.collectUrl) throw new Error(data.message || 'Whish could not start checkout.');
-    return { checkoutUrl: data.collectUrl, providerRef: orderId }; // Whish keys status lookups by externalId
-  },
-
-  async verify({ providerRef }) {
-    const base = process.env.WHISH_BASE_URL || 'https://whish.money/itmpapi';
-    const r = await fetch(`${base}/payment/collect/status`, { // TODO confirm exact path
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        channel: process.env.WHISH_CHANNEL,
-        secret: process.env.WHISH_SECRET,
-      },
-      body: JSON.stringify({ externalId: providerRef }),
-    });
-    if (!r.ok) return { status: 'pending' };
-    const data = await r.json().catch(() => ({}));
-    if (data.collectStatus === 'success') return { status: 'paid' };
-    if (['failed', 'declined', 'expired'].includes(data.collectStatus)) return { status: 'failed' };
-    return { status: 'pending' };
-  },
+  configured: () => false,
+  reason: 'Merchant API details required',
 };
 
 export const providers = { stripe, whish };

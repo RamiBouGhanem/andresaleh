@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { coach, programs } from './config';
 import Admin from './Admin';
-import Member, { Carousel, Physio, Shifts, api, startCheckout, PaymentOptions } from './Care';
+import Member, { Carousel, Physio, Shifts, api, startCheckout, PaymentPaths } from './Care';
 import PaymentReturn from './PaymentReturn';
 import './styles.css';
 import './clinical.css';
@@ -39,6 +39,23 @@ function Modal({ open, onClose, children, label }) {
     return () => { document.removeEventListener('keydown', close); document.body.style.overflow = ''; };
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement;
+    const sheet = sheetRef.current;
+    const controls = () => [...sheet.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), summary, [tabindex="0"]')].filter(el => el.getClientRects().length);
+    controls()[0]?.focus();
+    const trapFocus = event => {
+      if (event.key !== 'Tab') return;
+      const list = controls(), first = list[0], last = list.at(-1);
+      if (!first) { event.preventDefault(); return; }
+      if (event.shiftKey && (document.activeElement === first || !sheet.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || !sheet.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
+    };
+    sheet.addEventListener('keydown', trapFocus);
+    return () => { sheet.removeEventListener('keydown', trapFocus); previous?.focus?.(); };
+  }, [open]);
+
   if (!open) return null;
 
   const onTouchStart = (e) => {
@@ -61,8 +78,8 @@ function Modal({ open, onClose, children, label }) {
   return <div className={`modal-backdrop${closing ? ' closing' : ''}`} onMouseDown={requestClose} role="presentation">
     <section className={`modal${closing ? ' closing' : ''}`} role="dialog" aria-modal="true" aria-label={label}
       ref={sheetRef} onMouseDown={(e) => e.stopPropagation()}
-      onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}>
-      <div className="modal-handle" aria-hidden="true" />
+      >
+      <div className="modal-handle" aria-hidden="true" onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd} />
       <button className="icon-btn modal-close" onClick={requestClose} aria-label="Close"><X size={20} /></button>
       {children}
     </section>
@@ -110,7 +127,7 @@ function App() {
 
   useEffect(() => {
     fetch('/api/programs').then(r => r.ok ? r.json() : Promise.reject()).then(setCatalog)
-      .catch(() => setCatalogError('Programs could not load. Please refresh or contact the coach.'))
+      .catch(() => setCatalogError('Programs could not load — refresh the page or contact the coach'))
       .finally(() => setCatalogLoading(false));
     if (!sessionStorage.getItem('coach_view_tracked')) {
       fetch('/api/track', { method: 'POST' }).catch(() => {});
@@ -150,9 +167,11 @@ function App() {
     setOrderError('');
     const form = new FormData(event.currentTarget);
     try {
+      const session = await api('/session');
+      if (session.role !== 'member') { location.href = '/member?return=program&program=' + encodeURIComponent(selected.id); return; }
       const response = await fetch('/api/orders', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(Object.fromEntries(form.entries())),
+        body: JSON.stringify({ programId: selected.id, phone: form.get('phone') }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.message);
@@ -183,12 +202,12 @@ function App() {
   return <div className={`site-shell${physioPage ? ' physio-page' : ' home-page'}`}>
     <header className={`header${scrolled ? ' scrolled' : ''}`}>
       <button className="wordmark" onClick={() => navigate('home')} aria-label="Go to home">
-        <span className="brand-name"><span>{coach.firstName}</span> {coach.lastName}</span><b>COACHING & PHYSIOTHERAPY</b>
+        <span className="brand-name"><span>{coach.firstName}</span> {coach.lastName}</span><b>COACHING & POST-REHAB</b>
       </button>
       <nav className={menuOpen ? 'desktop-nav open' : 'desktop-nav'} aria-label="Main navigation">
         <button className={activeSection === 'programs' ? 'active' : ''} aria-current={activeSection === 'programs' ? 'page' : undefined} onClick={() => navigate('programs')}>Programs</button>
         <button className={activeSection === 'results' ? 'active' : ''} aria-current={activeSection === 'results' ? 'page' : undefined} onClick={() => navigate('results')}>Results</button>
-        <button className={activeSection === 'physio' ? 'active' : ''} aria-current={activeSection === 'physio' ? 'page' : undefined} onClick={() => navigate('physio')}>Physiotherapy</button>
+        <button className={activeSection === 'physio' ? 'active' : ''} aria-current={activeSection === 'physio' ? 'page' : undefined} onClick={() => navigate('physio')}>Post-rehab</button>
         <button className={activeSection === 'about' ? 'active' : ''} aria-current={activeSection === 'about' ? 'page' : undefined} onClick={() => navigate('about')}>The coach</button>
       </nav>
       <div className="header-actions">
@@ -198,27 +217,27 @@ function App() {
     </header>
 
     <main>
-      {physioPage ? <><a className="physio-back" href="/">← Back to coaching</a><Physio /><section className="section rehab-programs"><p className="eyebrow">Your recovery plan</p><h2>Support beyond<br /><em>the session.</em></h2><p>Speak with Andre about a personalized rehabilitation or return-to-training program following your assessment.</p><a className="primary-btn" href={`https://wa.me/${coach.whatsapp}?text=Hi%20Andre%2C%20I%27d%20like%20to%20discuss%20a%20physiotherapy%20program.`} target="_blank" rel="noopener noreferrer">Discuss a program <ArrowRight size={17}/></a></section></> : <>
+      {physioPage ? <><a className="physio-back" href="/">← Back to coaching</a><Physio /><section className="section rehab-programs"><p className="eyebrow">Your post-rehab plan</p><h2>Support beyond<br /><em>the session</em></h2><p>Build strength after treatment with a personal return-to-training plan shaped around your goals</p><a className="primary-btn" href={`https://wa.me/${coach.whatsapp}?text=Hi%20Andre%2C%20I%27d%20like%20to%20discuss%20a%20post-rehab%20program`} target="_blank" rel="noopener noreferrer">Explore your next step <ArrowRight size={17}/></a></section></> : <>
       <section id="home" className="hero">
         <picture className="hero-media"><img src="/images/stock-training.webp" alt="Athlete training with a kettlebell in a gym" fetchPriority="high" width="900" height="1350" /></picture>
         <div className="hero-overlay" />
         <div className="hero-content">
-          <p className="eyebrow"><span /> Personal training · Physiotherapy</p>
-          <h1>Build strength.<br /><em>Move better.</em></h1>
-          <p className="hero-copy">A stronger body. Better movement.<br className="mobile-break" /> A plan that’s yours.</p>
+          <p className="eyebrow"><span /> Training programs · Post-rehab</p>
+          <h1>Build strength<br /><em>Move better</em></h1>
+          <p className="hero-copy">A stronger body, better movement<br className="mobile-break" /> with a clear program and weekly coach support</p>
           <div className="hero-actions">
-            <a className="primary-btn" href={`https://wa.me/${coach.whatsapp}?text=Hi%20Andre%2C%20I%27d%20like%20to%20start%20coaching.`} target="_blank" rel="noopener noreferrer">Start with Andre <ArrowRight size={18} /></a>
+            <a className="primary-btn" href={`https://wa.me/${coach.whatsapp}?text=Hi%20Andre%2C%20I%27d%20like%20to%20start%20coaching`}  target="_blank" rel="noopener noreferrer">Start with Andre <ArrowRight size={18} /></a>
             <button className="text-btn" onClick={() => navigate('programs')}>Explore coaching <ArrowRight size={17} /></button>
           </div>
-          <div className="hero-proof"><div><b>8 years</b><span>Of coaching</span></div><div><b>1:1</b><span>Built around you</span></div></div>
+          <div className="hero-proof"><div><b>10 years</b><span>Of coaching</span></div><div><b>Expert guidance</b><span>Structured for lasting progress</span></div></div>
         </div>
         <button className="hero-scroll" onClick={() => navigate('programs')} aria-label="Explore coaching programs"><span>Discover your next level</span><ArrowRight size={16}/></button>
       </section>
 
       <section id="programs" className="section programs-section">
         <div className="section-heading">
-          <div><p className="eyebrow">Coaching</p><h2>Coaching <em>programs.</em></h2></div>
-          <p>Pick your goal. Andre builds the structure.</p>
+          <div><p className="eyebrow">Coaching</p><h2>Coaching <em>programs</em></h2></div>
+          <p>Choose your program, train with a clear plan and meet your coach each week</p>
         </div>
         {catalogError && <p role="alert">{catalogError}</p>}
         <Carousel label="Coaching programs">
@@ -227,7 +246,7 @@ function App() {
             <div className="program-body">
               <div className="program-meta"><span><Timer size={15} /> {program.duration}</span><span><Target size={15} /> {program.level}</span></div>
               <h3>{program.title}</h3><p>{program.subtitle}</p>
-              <div className="program-bottom"><strong>${program.price}<small> USD</small></strong><button onClick={() => { tap(); setSelected(program); setSubmitted(null); setOrderError(''); }} aria-label={`View ${program.title}`}><span>View program</span><ArrowRight size={19} /></button></div>
+              <div className="program-bottom"><strong className={program.price ? '' : 'price-on-request'}>{program.price ? <>${program.price}<small> USD</small></> : 'Pricing pending'}</strong><button onClick={() => { tap(); setSelected(program); setSubmitted(null); setOrderError(''); }} aria-label={`View ${program.title}`}><span>View program</span><ArrowRight size={19} /></button></div>
             </div>
           </article>)}
         </Carousel>
@@ -237,30 +256,23 @@ function App() {
 
       <Physio preview />
       <section id="about" className="section about-section">
-        <div className="portrait-wrap"><img src="/images/real-coaching.webp" alt="Coach guiding an athlete through a focused strength session" loading="lazy" width="1400" height="1120" /><div className="portrait-mark"><Award /><span><b>8 YEARS</b>OF COACHING</span></div></div>
+        <div className="portrait-wrap"><img src="/images/real-coaching.webp" alt="Coach guiding an athlete through a focused strength session" loading="lazy" width="1400" height="1120" /><div className="portrait-mark"><Award /><span><b>10 YEARS</b>OF COACHING</span></div></div>
         <div className="about-copy">
-          <p className="eyebrow">Your coach</p><h2>Andre<br /><em>Saleh.</em></h2>
-          <p>Eight years of coaching. One focused approach: build strength, move with confidence, and make progress you can see.</p>
+          <p className="eyebrow">Your coach</p><h2>Andre<br /><em>Saleh</em></h2>
+          <p>Ten years of coaching, one clear mission: help you build strength, move with confidence and see your progress</p>
           <div className="credential-grid">
             <div><Dumbbell /><span><b>Strength</b>Progressive programming</span></div>
-            <div><ShieldCheck /><span><b>Personal</b>Individual guidance</span></div>
+            <div><ShieldCheck /><span><b>Structured</b>Ready-to-follow programs</span></div>
             <div><TrendingUp /><span><b>Measurable</b>Weekly progress checks</span></div>
             <div><MessageCircle /><span><b>Supported</b>Direct coach feedback</span></div>
           </div>
-          <a className="text-link" href={coach.instagram} target="_blank" rel="noreferrer"><Instagram size={18} /> @andresaleh10 <ArrowRight size={16} /></a>
+          <a className="text-link" href={coach.instagram} target="_blank" rel="noreferrer"><Instagram size={18} /> @salehandre10 <ArrowRight size={16} /></a>
         </div>
       </section>
 
-      <section id="contact" className="section final-cta">
-        <Zap />
-        <p className="eyebrow">Ready when you are</p><h2>Your next chapter<br /><em>starts here.</em></h2>
-        <p>Tell Andre your goal. Build the plan together.</p>
-        <div className="cta-actions"><button className="primary-btn" onClick={() => navigate('programs')}>Find my program <ArrowRight size={18} /></button><a className="outline-btn" href={`https://wa.me/${coach.whatsapp}`} target="_blank" rel="noreferrer"><MessageCircle size={18} /> Talk to the coach</a></div>
-      </section>
+    
       </>}
     </main>
-
-    <footer><button className="wordmark" onClick={() => navigate('home')}><span className="brand-name"><span>{coach.firstName}</span> {coach.lastName}</span><b>COACHING & PHYSIOTHERAPY</b></button><p>© 2026 {coach.brand}.</p><div><a href={`mailto:${coach.email}`}>Email</a><a href={`https://wa.me/${coach.whatsapp}`} target="_blank" rel="noreferrer">WhatsApp</a><a href={coach.instagram} target="_blank" rel="noreferrer">Instagram</a><a href="/admin">Coach admin</a></div></footer>
 
     <nav className="social-float" aria-label="Contact Andre">
       <a className="social-whatsapp" href={`https://wa.me/${coach.whatsapp}`} target="_blank" rel="noopener noreferrer" aria-label="Chat with Andre on WhatsApp" title="WhatsApp">
@@ -270,22 +282,35 @@ function App() {
     </nav>
 
     {!physioPage && <div className={`quick-bar${showQuickBar && !quickBarDismissed ? ' visible' : ''}`} role="complementary" aria-label="Quick contact">
-      <span><b>Ready to start?</b><small>Andre replies personally.</small></span>
+      <span><b>Ready to start?</b><small>Andre replies personally</small></span>
       <div className="quick-bar-actions">
-        <a className="primary-btn" href={`https://wa.me/${coach.whatsapp}?text=Hi%20Andre%2C%20I%27d%20like%20to%20start%20coaching.`} target="_blank" rel="noopener noreferrer" onClick={tap}>Message Andre</a>
+        <a className="primary-btn" href={`https://wa.me/${coach.whatsapp}?text=Hi%20Andre%2C%20I%27d%20like%20to%20start%20coaching`}  target="_blank" rel="noopener noreferrer" onClick={tap}>Message Andre</a>
         <button className="icon-btn" aria-label="Dismiss" onClick={() => setQuickBarDismissed(true)}><X size={16} /></button>
       </div>
     </div>}
 
-    <div className="mobile-dock"><button className={activeSection === 'programs' ? 'active' : ''} aria-current={activeSection === 'programs' ? 'page' : undefined} onClick={() => navigate('programs')}><Dumbbell /><span>Programs</span></button><button className={activeSection === 'results' ? 'active' : ''} aria-current={activeSection === 'results' ? 'page' : undefined} onClick={() => navigate('results')}><Award /><span>Results</span></button><button className={activeSection === 'physio' ? 'active' : ''} aria-current={activeSection === 'physio' ? 'page' : undefined} onClick={() => navigate('physio')}><ShieldCheck /><span>Physio</span></button><button className={activeSection === 'about' ? 'active' : ''} aria-current={activeSection === 'about' ? 'page' : undefined} onClick={() => navigate('about')}><UserRound /><span>Coach</span></button></div>
+    <div className="mobile-dock"><button className={activeSection === 'programs' ? 'active' : ''} aria-current={activeSection === 'programs' ? 'page' : undefined} onClick={() => navigate('programs')}><Dumbbell /><span>Programs</span></button><button className={activeSection === 'results' ? 'active' : ''} aria-current={activeSection === 'results' ? 'page' : undefined} onClick={() => navigate('results')}><Award /><span>Results</span></button><button className={activeSection === 'physio' ? 'active' : ''} aria-current={activeSection === 'physio' ? 'page' : undefined} onClick={() => navigate('physio')}><ShieldCheck /><span>Post-rehab</span></button><button className={activeSection === 'about' ? 'active' : ''} aria-current={activeSection === 'about' ? 'page' : undefined} onClick={() => navigate('about')}><UserRound /><span>Coach</span></button></div>
 
     <Modal open={Boolean(selected)} onClose={() => setSelected(null)} label="Program details">
-      {selected && !submitted && <><p className="eyebrow">{selected.tag}</p><h2>{selected.title}</h2><p className="modal-description">{selected.description}</p><ul className="feature-list">{selected.features.map(f => <li key={f}><Check size={16} />{f}</li>)}</ul><div className="checkout-summary"><span>One-time program access</span><strong>${selected.price} USD</strong></div>
-        <PaymentOptions disabled={payBusy} onPay={payForProgram} />
-        <small>Card payments unlock the program instantly. Not signed in yet? You'll be asked to sign in or create a free account first.</small>
+      {selected && !submitted && <>
+        <p className="eyebrow">{selected.tag}</p><h2>{selected.title}</h2>
+        <p className="modal-description">{selected.description}</p>
+        <div className="purchase-inclusions"><span><Check size={16} />8 weeks of structured training</span><span><Check size={16} />Weekly coach meeting</span></div>
+        <details className="program-inclusions"><summary>What’s included</summary><ul className="feature-list">{selected.features.map(f => <li key={f}><Check size={16} />{f}</li>)}</ul></details>
+        <div className="checkout-summary"><span>Total price<small>One payment • Full eight-week program</small></span><strong>{selected.price > 0 ? `$${selected.price} USD` : 'Pricing pending'}</strong></div>
+        <PaymentPaths disabled={payBusy || selected.price <= 0} onPay={payForProgram}>
+          <form className="checkout-form" onSubmit={submitOrder}>
+            <p>Request this program, pay the coach directly in cash, and it will unlock after the coach confirms receipt</p>
+            <label>WhatsApp number (optional)<input name="phone" inputMode="tel" autoComplete="tel" placeholder="+961 …" /></label>
+            <button className="primary-btn" disabled={loading || selected.price <= 0}>{loading ? 'Sending request…' : <>Request cash payment <ArrowRight size={18} /></>}</button>
+            <small>You’ll need a member account to send the request</small>
+            {orderError && <p role="alert" className="form-error">{orderError}</p>}
+          </form>
+        </PaymentPaths>
         {payError && <p role="alert" className="form-error">{payError}</p>}
-        <details className="cash-request-details"><summary>Prefer to pay the coach directly (cash / bank transfer)?</summary><form className="checkout-form" onSubmit={submitOrder}><input type="hidden" name="program" value={selected.title} /><label>Full name<input name="name" required placeholder="Your full name" /></label><label>Email address<input type="email" name="email" required placeholder="you@example.com" /></label><label>WhatsApp number<input name="phone" placeholder="+961 ..." /></label><button className="primary-btn" disabled={loading}>{loading ? 'Sending…' : <>Request this program <ArrowRight size={18} /></>}</button><small>Your coach will arrange payment and grant access manually.</small><a href="/member">Sign in / create account</a>{orderError&&<p role="alert" className="form-error">{orderError}</p>}</form></details></>}
-      {submitted && <div className="success-state"><Confetti /><div><Check size={28} /></div><p className="eyebrow">Request received</p><h2>You’re on the list.</h2><p>{submitted.message}</p><strong>Reference: {submitted.reference}</strong><button className="primary-btn" onClick={() => setSelected(null)}>Done</button></div>}
+      </>}
+
+      {submitted && <div className="success-state"><Confetti /><div><Check size={28} /></div><p className="eyebrow">Request received</p><h2>You’re on the list</h2><p>{submitted.message}</p><strong>Reference: {submitted.reference}</strong><button className="primary-btn" onClick={() => setSelected(null)}>Done</button></div>}
     </Modal>
 
 
